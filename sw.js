@@ -1,5 +1,5 @@
 // 電波がなくても開けるように、アプリのファイルを端末に保存しておく
-const CACHE = "kakeibo-2026-11-06-4";
+const CACHE = "kakeibo-2026-11-06-5";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icons/apple-touch-icon.png", "./icons/icon-192.png", "./icons/icon-512.png"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

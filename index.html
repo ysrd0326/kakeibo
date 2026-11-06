@@ -804,6 +804,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
         localStorage.setItem(STORE, JSON.stringify(state));
         data = state;
         revision = (revision ?? 0) + 1;
+        cloudChanged();
         return true;
       } catch {
         toast("保存できませんでした。このブラウザでファイルのデータ保存が許可されているか確認してください。");
@@ -869,6 +870,236 @@ main{padding-bottom:calc(84px + var(--safe-b))}
       syncBusy = false;
       syncStatus();
     }
+  }
+  // ===== Googleスプレッドシートとの同期 =====
+  // 記録はまずこの端末に保存し、つながっていればスプレッドシートへ送る（電波がなくても使える）
+  var CLOUD_CFG = STORE + "-cloud";        // { url, key }
+  var CLOUD_BASE = STORE + "-cloud-base";  // 最後にそろえた時点の { rev, data }
+  var CLOUD_DIRTY = STORE + "-cloud-dirty";
+  var cloudBusy = false, cloudTimer = null, cloudAgain = false;
+  var cloud = { state: "off", at: null, error: "" };
+  function readJSON(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+  function writeJSON(key, value) {
+    try {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+    }
+  }
+  function cloudConfig() {
+    const c = readJSON(CLOUD_CFG);
+    return c && typeof c.url === "string" && /^https:\/\/script\.google(usercontent)?\.com\//.test(c.url) && typeof c.key === "string" && c.key ? c : null;
+  }
+  function cloudDirty() {
+    try {
+      return localStorage.getItem(CLOUD_DIRTY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function setDirty(v) {
+    try {
+      if (v) localStorage.setItem(CLOUD_DIRTY, "1");
+      else localStorage.removeItem(CLOUD_DIRTY);
+    } catch {
+    }
+  }
+  function cloudLabel() {
+    if (!cloudConfig()) return "";
+    const time = cloud.at ? new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" }).format(cloud.at) : "";
+    if (cloud.state === "syncing") return "同期中…";
+    if (cloud.state === "error") return cloud.error || "同期できませんでした";
+    if (cloudDirty()) return "未送信の変更があります（つながると送ります）";
+    return time ? `同期済み（${time}）` : "同期済み";
+  }
+  function showCloudState() {
+    $$("[data-cloud-label]").forEach((el) => el.textContent = cloudLabel());
+  }
+  async function cloudCall(cfg, payload) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25e3);
+    try {
+      const res = await fetch(cfg.url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ ...payload, key: cfg.key }), redirect: "follow", signal: controller.signal, cache: "no-store" });
+      if (!res.ok) throw Error("http " + res.status);
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  var same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // 3者比較でまとめる：前回そろえた内容(base)・この端末(local)・スプレッドシート(remote)
+  function mergeLedgers(base, local, remote) {
+    const map = (list, key) => new Map((list || []).map((x) => [x[key], x]));
+    const B = map(base && base.records, "id"), L = map(local.records, "id"), R = map(remote.records, "id");
+    const records = [];
+    for (const id of new Set([...R.keys(), ...L.keys()])) {
+      const b = B.get(id), l = L.get(id), r = R.get(id);
+      if (l && r) records.push(b && same(l, b) ? r : l);
+      else if (l) {
+        if (!b) records.push(l);          // この端末で追加
+      } else if (r) {
+        if (!b) records.push(r);          // 別の端末で追加
+      }
+      // base にあって片方で消えている → 消したものとして扱う
+    }
+    let categories, quickPresets;
+    if (!base) {
+      const cats = map(remote.categories, "id");
+      for (const c of local.categories) if (!cats.has(c.id)) cats.set(c.id, c);
+      categories = [...cats.values()].slice(0, 40);
+      const presets = map(remote.quickPresets, "key");
+      for (const p of local.quickPresets || []) if (!presets.has(p.key)) presets.set(p.key, p);
+      quickPresets = [...presets.values()].slice(0, 100);
+    } else {
+      categories = same(local.categories, base.categories) ? remote.categories : local.categories;
+      quickPresets = same(local.quickPresets, base.quickPresets) ? remote.quickPresets : local.quickPresets;
+    }
+    const ids = new Set(categories.map((c) => c.id));
+    const fixed = records.map((r) => r.type === "expense" && !ids.has(r.category) ? { ...r, category: "other" } : r);
+    return validate({ records: fixed, categories, quickPresets });
+  }
+  function applyCloudData(next) {
+    const editing = $("dialog[open]") || document.activeElement?.matches("input,textarea,select,[contenteditable]");
+    try {
+      localStorage.setItem(STORE, JSON.stringify(next));
+    } catch {
+    }
+    if (same(next, data)) return;
+    if (editing) {
+      data = next;
+      revision = (revision ?? 0) + 1;
+      return;
+    }
+    revision = (revision ?? 0) + 1;
+    applySyncedState(next);
+  }
+  async function cloudSync({ quiet = true } = {}) {
+    const cfg = cloudConfig();
+    if (!cfg) return false;
+    if (cloudBusy) {
+      cloudAgain = true;
+      return false;
+    }
+    cloudBusy = true;
+    cloud.state = "syncing";
+    showCloudState();
+    try {
+      let base = readJSON(CLOUD_BASE);
+      if (base && (typeof base.rev !== "number" || !base.data)) base = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (!cloudDirty()) {
+          const got = await cloudCall(cfg, { action: "get" });
+          if (!got.ok) throw Object.assign(Error(got.error || "failed"), { code: got.error });
+          if (got.revision === 0) {
+            // スプレッドシートが空：この端末の内容を最初に送る
+            setDirty(true);
+            continue;
+          }
+          if (!base || got.revision !== base.rev) {
+            const remote = validate(got.data);
+            writeJSON(CLOUD_BASE, { rev: got.revision, data: remote });
+            applyCloudData(remote);
+          }
+          break;
+        }
+        const local = validate(data);
+        const put = await cloudCall(cfg, { action: "put", baseRevision: base ? base.rev : 0, data: local });
+        if (put.ok) {
+          writeJSON(CLOUD_BASE, { rev: put.revision, data: local });
+          if (same(local, data)) setDirty(false);
+          break;
+        }
+        if (put.conflict) {
+          // 別の端末が先に保存していた：まとめてから送り直す
+          const remote = put.data ? validate(put.data) : emptyLedger();
+          const merged = mergeLedgers(base && base.data, local, remote);
+          base = { rev: put.revision, data: remote };
+          writeJSON(CLOUD_BASE, base);
+          applyCloudData(merged);
+          setDirty(true);
+          continue;
+        }
+        throw Object.assign(Error(put.error || "failed"), { code: put.error });
+      }
+      cloud.state = "ok";
+      cloud.at = new Date();
+      cloud.error = "";
+      return true;
+    } catch (err) {
+      const code = err && err.code;
+      cloud.state = "error";
+      cloud.error = code === "unauthorized" ? "合言葉が違います。設定を確認してください。" : code === "secret_not_set" ? "スプレッドシート側の合言葉がまだ設定されていません。" : code === "bad_data" || code === "bad_request" ? "同期データを読み取れませんでした。" : cloudDirty() ? "未送信の変更があります（つながると送ります）" : "スプレッドシートに接続できませんでした。";
+      if (!quiet) toast(cloud.error);
+      return false;
+    } finally {
+      cloudBusy = false;
+      showCloudState();
+      if (cloudAgain) {
+        cloudAgain = false;
+        setTimeout(() => cloudSync(), 300);
+      }
+    }
+  }
+  function cloudChanged() {
+    if (!cloudConfig()) return;
+    setDirty(true);
+    showCloudState();
+    clearTimeout(cloudTimer);
+    cloudTimer = setTimeout(() => cloudSync(), 800);
+  }
+  async function connectCloud(url, key) {
+    url = url.trim();
+    key = key.trim();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) {
+      toast("URLは https://script.google.com/macros/s/…/exec の形で入れてください。");
+      return;
+    }
+    if (key.length < 8) {
+      toast("合言葉は8文字以上です。");
+      return;
+    }
+    const prev = readJSON(CLOUD_CFG);
+    writeJSON(CLOUD_CFG, { url, key });
+    if (!prev || prev.url !== url) writeJSON(CLOUD_BASE, null);
+    if (data.records.length) setDirty(true);
+    const ok = await cloudSync({ quiet: false });
+    if (ok) {
+      toast("スプレッドシートと同期しました");
+      render();
+    } else if (cloud.error.startsWith("合言葉") || cloud.error.startsWith("スプレッドシート側")) {
+      writeJSON(CLOUD_CFG, prev);
+      render();
+    }
+  }
+  function disconnectCloud() {
+    writeJSON(CLOUD_CFG, null);
+    writeJSON(CLOUD_BASE, null);
+    setDirty(false);
+    cloud = { state: "off", at: null, error: "" };
+    render();
+    toast("同期を解除しました。記録はこの端末に残っています。");
+  }
+  function syncSettingsView() {
+    const cfg = cloudConfig();
+    return `<div class="list-header"><span>端末間の同期（Googleスプレッドシート）</span></div><form id="cloud-form" class="group" novalidate><div class="cell"><label class="cell-label" for="cloud-url">URL</label><input id="cloud-url" class="cell-input" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://script.google.com/…/exec" value="${escape(cfg ? cfg.url : "")}"></div><div class="cell"><label class="cell-label" for="cloud-key">合言葉</label><input id="cloud-key" class="cell-input" type="password" autocomplete="off" placeholder="8文字以上" value="${escape(cfg ? cfg.key : "")}"></div>${cfg ? `<div class="cell"><span>状態</span><span class="cell-value" data-cloud-label>${escape(cloudLabel())}</span></div>` : ""}<button type="submit" class="cell settings-row"><span class="cat-icon" style="--cat:#34c759">${icon("repeat")}</span><span>${cfg ? "今すぐ同期" : "接続する"}</span></button>${cfg ? `<button type="button" class="cell settings-row" id="cloud-off" style="color:var(--red)"><span class="cat-icon" style="--cat:#8e8e93">${icon("close")}</span><span>同期を解除</span></button>` : ""}</form><p class="list-footer">${cfg ? "記録すると自動でスプレッドシートに送ります。アプリを開いたときにも最新の内容を取り込みます。" : "スプレッドシート側で発行したURLと合言葉を入れると、この端末の記録とスプレッドシートを同期します。ほかの端末でも同じURLと合言葉を入れてください。"}</p>`;
+  }
+  function bindSyncSettings() {
+    const form = $("#cloud-form");
+    if (!form) return;
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const cfg = cloudConfig(), url = $("#cloud-url").value, key = $("#cloud-key").value;
+      if (cfg && cfg.url === url.trim() && cfg.key === key.trim()) cloudSync({ quiet: false }).then((ok) => ok && toast("同期しました"));
+      else connectCloud(url, key);
+    };
+    if ($("#cloud-off")) $("#cloud-off").onclick = () => confirmDialog("同期を解除", "この端末とスプレッドシートの同期をやめます。記録はこの端末にもスプレッドシートにも残ります。", disconnectCloud, "解除する");
   }
   function migrateLedger() {
     if (!legacy || revision === null) return;
@@ -972,7 +1203,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
  <div class="group"><div class="cell"><span>支出</span><span class="cell-value strong">${money(current.expense)}</span></div><div class="cell"><span>収入</span><span class="cell-value">${money(current.income)}</span></div><div class="cell"><span>収支</span><span class="cell-value">${money(current.income - current.expense)}</span></div></div>
  <div class="list-header"><h2>最近の記録</h2><a href="#history">すべて表示</a></div>
  <div class="group">${data.records.length ? sorted(data.records).slice(0, 5).map((r) => row(r, true)).join("") : empty("まだ記録がありません", "上の候補をタップすると、すぐに試せます。")}</div>
- <p class="list-footer">${LOCAL_ONLY ? "記録はこの端末に保存されます。設定からバックアップを作れます。" : "同じアカウントで端末間を同期します。"}</p>`;
+ <p class="list-footer">${cloudConfig() ? `<span data-cloud-label>${escape(cloudLabel())}</span>` : "記録はこの端末に保存されます。設定でスプレッドシートと同期できます。"}</p>`;
   }
   function currentSuggestions() {
     return frequentEntries(data.records, data.quickPresets || [], draft.type).map((candidate) => ({ ...candidate, category: candidate.type === "income" ? "income" : data.categories.some((c) => c.id === candidate.category) ? candidate.category : "other" }));
@@ -1362,10 +1593,12 @@ main{padding-bottom:calc(84px + var(--safe-b))}
   }
   function settingsView() {
     return `${largeTitle("設定")}<div class="list-header"><span>カテゴリ</span></div><div class="group">${data.categories.map((c, i) => `<div class="cell settings-category"><span class="cat-icon" style="--cat:${c.color};width:30px;height:30px;border-radius:8px">${icon(c.icon)}</span><input data-cat-name="${escape(c.id)}" value="${escape(c.name)}" aria-label="${escape(c.name)}の名前">${i === 0 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="-1" aria-label="${escape(c.name)}を上に移動">${icon("up")}</button>`}${i === data.categories.length - 1 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="1" aria-label="${escape(c.name)}を下に移動">${icon("down")}</button>`}${c.id === "other" ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button danger" data-remove-cat="${escape(c.id)}" aria-label="${escape(c.name)}を削除">${icon("trash")}</button>`}</div>`).join("")}<form id="add-category" class="cell settings-add"><span class="cat-icon" style="--cat:var(--tint);width:30px;height:30px;border-radius:8px">${icon("plus")}</span><input id="new-category" placeholder="新しいカテゴリ" aria-label="新しいカテゴリ名" required enterkeyhint="done"><button type="submit">追加</button></form></div><p class="list-footer">名前はタップして変更できます（30文字まで）。「その他」は削除できません。</p>
- <div class="list-header"><span>データ</span></div><div class="group"><button type="button" class="cell settings-row" id="backup"><span class="cat-icon" style="--cat:#0088ff">${icon("download")}</span><span>バックアップを保存</span></button><button type="button" class="cell settings-row" id="restore"><span class="cat-icon" style="--cat:#34c759">${icon("upload")}</span><span>バックアップを読み込む</span></button><button type="button" class="cell settings-row" id="export-all"><span class="cat-icon" style="--cat:#8e8e93">${icon("download")}</span><span>CSVを書き出す</span></button><div class="cell"><span>保存中の記録</span><span class="cell-value">${data.records.length}件</span></div></div><input type="file" id="restore-file" accept="application/json,.json" hidden><p class="list-footer">${LOCAL_ONLY ? "記録はこのブラウザの中だけに保存されます。別の端末やブラウザでは見られないので、ときどきバックアップを保存してください。以前のサイトの記録は、そのバックアップ（JSON）を読み込むと引き継げます。" : "同じアカウントで開くと、記録・カテゴリ・入力候補を端末間で同期します。"}</p>
+${syncSettingsView()}
+ <div class="list-header"><span>データ</span></div><div class="group"><button type="button" class="cell settings-row" id="backup"><span class="cat-icon" style="--cat:#0088ff">${icon("download")}</span><span>バックアップを保存</span></button><button type="button" class="cell settings-row" id="restore"><span class="cat-icon" style="--cat:#34c759">${icon("upload")}</span><span>バックアップを読み込む</span></button><button type="button" class="cell settings-row" id="export-all"><span class="cat-icon" style="--cat:#8e8e93">${icon("download")}</span><span>CSVを書き出す</span></button><div class="cell"><span>保存中の記録</span><span class="cell-value">${data.records.length}件</span></div></div><input type="file" id="restore-file" accept="application/json,.json" hidden><p class="list-footer">${LOCAL_ONLY ? (cloudConfig() ? "記録はこの端末とスプレッドシートの両方に保存されます。" : "記録はこの端末の中だけに保存されます。") + "念のため、ときどきバックアップも保存してください。以前のサイトの記録は、そのバックアップ（JSON）を読み込むと引き継げます。" : "同じアカウントで開くと、記録・カテゴリ・入力候補を端末間で同期します。"}</p>
  <div class="list-header"><span>ひとこと入力・音声入力</span></div><div class="group"><div class="cell" style="display:block;padding:12px 16px"><p style="font-size:15px;line-height:20px">店名やキーワード、過去の分類から自動で振り分けます。同じメモで保存したカテゴリを次回から優先します。判定が難しいものは「その他」に入るので、保存前に確認してください。</p></div></div><p class="list-footer">音声入力はブラウザの音声認識を使います。音声がブラウザの提供元へ送信される場合があります。使えないときは、金額・カテゴリ・メモ欄から入力できます。</p>`;
   }
   function bindSettings() {
+    bindSyncSettings();
     $$("[data-cat-name]").forEach((input) => input.onchange = async () => {
       const name = input.value.trim();
       if (!name || name.length > 30 || data.categories.some((c) => c.id !== input.dataset.catName && c.name === name)) {
@@ -1594,6 +1827,14 @@ main{padding-bottom:calc(84px + var(--safe-b))}
   navigate();
   
   refreshLedger(true);
+  cloudSync();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") cloudSync();
+  });
+  window.addEventListener("online", () => cloudSync());
+  setInterval(() => {
+    if (document.visibilityState === "visible") cloudSync();
+  }, 6e4);
   if (loadError) toast("保存データを読み込めませんでした。元のデータはまだ上書きしていません。");
 })();
 
