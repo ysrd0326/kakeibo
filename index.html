@@ -327,6 +327,94 @@ dialog.alert::backdrop{background:rgba(0,0,0,.25)}
 .breakdown-row .chev{grid-column:4;grid-row:1/3}
 .breakdown-row .bar{grid-column:2/4;grid-row:2}
 
+/* ===== 記録画面：「記録する」ボタンまで1画面に収める ===== */
+.rec-head{align-items:center;margin-bottom:10px}
+.rec-head .large-title{font-size:30px;line-height:36px}
+.rec-head .date-sub{margin:0;padding:0;font-size:13px;line-height:16px}
+.seg-sm{margin:0;width:136px;flex-shrink:0}
+.seg-sm button{min-height:30px;font-size:14px}
+.voice-card{padding:8px}
+.voice-actions{gap:8px}
+.voice-button,.voice-save{min-height:42px;font-size:16px}
+.voice-result{margin:6px 6px 2px}
+.voice-result:empty{display:none}
+.voice-result:empty:before{content:none}
+.voice-status{margin:0 6px 2px}
+.suggestions{margin:10px -16px 10px}
+.suggestion-use{min-height:36px;font-size:14px}
+.suggestion-edit{width:36px;height:36px}
+.amount-card{display:flex;align-items:center;gap:12px;padding:6px 16px}
+.amount-card .amount-label{font-size:17px;line-height:22px;color:var(--label);flex-shrink:0}
+.amount-card .amount-line{flex:1;justify-content:flex-end}
+.amount-card .yen{font-size:22px}
+.amount-card .amount-input{font-size:32px;line-height:40px;text-align:right}
+.rec-details{margin-top:8px}
+.rec-details .cell{min-height:44px;padding:3px 16px}
+.rec-cats{margin-top:8px}
+.cat-head{display:flex;justify-content:space-between;gap:8px;padding:8px 16px 0;color:var(--label-2);font-size:13px;line-height:16px}
+.rec-cats .category-grid{padding:4px 6px 6px;gap:2px}
+.rec-cats .category{min-height:60px;gap:4px;padding:4px 2px;font-size:12px;line-height:14px}
+.rec-cats .cat-icon{width:30px;height:30px;border-radius:9px}
+.rec-cats .cat-icon svg{width:18px;height:18px}
+.rec-cats .category.selected{padding:4px 2px}
+.rec-cats .category.selected:after{top:3px;right:4px;width:14px;height:14px;background-size:9px}
+#entry-form .error-text{padding:6px 16px 0}
+#entry-form .save-button{margin-top:10px;min-height:50px}
+.page-record .list-header:first-of-type{margin-top:28px}
+/* 編集シートの金額欄は大きいまま */
+.sheet .amount-card{display:block;padding:12px 16px 14px}
+.sheet .amount-card .amount-label{font-size:13px;line-height:18px;color:var(--label-2)}
+.sheet .amount-card .amount-line{justify-content:flex-start}
+.sheet .amount-card .yen{font-size:28px}
+.sheet .amount-card .amount-input{font-size:40px;line-height:48px;text-align:left}
+
+/* ===== トースト：横幅を広く、短時間で消える（他をタップしても消える） ===== */
+#toast{width:min(480px,calc(100vw - 24px));justify-content:space-between;border-radius:22px;padding:14px 18px;font-size:15px;line-height:20px;bottom:calc(96px + var(--safe-b))}
+#toast span{flex:1;min-width:0}
+
+/* ===== Liquid Glass 風（ナビゲーション層だけに使い、内容の層は不透明のまま） ===== */
+:root{
+  --glass-bg:rgba(255,255,255,.52);
+  --glass-edge:rgba(255,255,255,.85);
+  --glass-edge-2:rgba(255,255,255,.35);
+  --glass-shadow:0 10px 30px rgba(0,0,0,.12),0 2px 6px rgba(0,0,0,.06);
+  --glass-lens:rgba(255,255,255,.72);
+  --glass-blur:blur(14px) saturate(190%) brightness(1.04);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --glass-bg:rgba(44,44,48,.46);
+    --glass-edge:rgba(255,255,255,.28);
+    --glass-edge-2:rgba(255,255,255,.08);
+    --glass-shadow:0 10px 30px rgba(0,0,0,.5);
+    --glass-lens:rgba(255,255,255,.14);
+  }
+}
+.tabbar-inner,#toast,.navbar.scrolled,.glass{background:var(--glass-bg);-webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);border:0;box-shadow:var(--glass-shadow),inset 0 1px 0 var(--glass-edge),inset 0 -1px 0 var(--glass-edge-2),inset 0 0 18px rgba(255,255,255,.12)}
+.tabbar-inner:before,#toast:before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;background:linear-gradient(140deg,var(--glass-edge) 0%,transparent 35%,transparent 65%,var(--glass-edge-2) 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+.tabbar-inner{position:relative;border-radius:34px}
+.tab{position:relative;z-index:1;transition:color .2s,transform .15s}
+.tab[aria-current=page]{background:var(--glass-lens);box-shadow:0 2px 10px rgba(0,0,0,.08),inset 0 1px 0 rgba(255,255,255,.7)}
+@media (prefers-color-scheme:dark){.tab[aria-current=page]{box-shadow:inset 0 1px 0 rgba(255,255,255,.18)}}
+.navbar.scrolled{box-shadow:0 1px 0 var(--glass-edge-2),inset 0 -1px 0 var(--glass-edge-2)}
+/* 主要ボタンにも光沢 */
+.save-button,.btn-prominent{box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.08),0 4px 14px color-mix(in srgb,var(--tint-fill) 35%,transparent)}
+.seg button.on{box-shadow:0 3px 8px rgba(0,0,0,.12),inset 0 1px 0 rgba(255,255,255,.8)}
+/* シートは上端に光る縁 */
+dialog.sheet{box-shadow:0 -1px 0 var(--glass-edge),0 -10px 40px rgba(0,0,0,.18)}
+dialog.alert{background:var(--glass-bg);-webkit-backdrop-filter:blur(30px) saturate(190%);backdrop-filter:blur(30px) saturate(190%);box-shadow:var(--glass-shadow),inset 0 1px 0 var(--glass-edge)}
+@media (prefers-color-scheme:light){dialog.alert{background:rgba(255,255,255,.78)}}
+/* 「透明度を下げる」設定の人には不透明に */
+@media (prefers-reduced-transparency:reduce){
+  .tabbar-inner,#toast,.navbar.scrolled,dialog.alert{background:var(--cell);-webkit-backdrop-filter:none;backdrop-filter:none}
+}
+.amount-line{min-width:0}
+.amount-input{width:100%}
+/* ひとこと入力欄（キーボードの音声入力にも対応） */
+.voice-result{display:block!important;min-height:36px;margin:8px 0 0;padding:7px 10px;border-radius:10px;background:var(--fill-2);outline:none;-webkit-user-select:text;user-select:text;cursor:text}
+.voice-result:empty:before{content:attr(data-ph)!important;color:var(--label-3)}
+.voice-result:focus{box-shadow:0 0 0 2px var(--tint)}
+
   </style>
 </head>
 <body>
@@ -791,7 +879,7 @@ dialog.alert::backdrop{background:rgba(0,0,0,.25)}
       action();
       el.classList.remove("show");
     };
-    toastTimer = setTimeout(() => el.classList.remove("show"), 6500);
+    toastTimer = setTimeout(() => el.classList.remove("show"), action ? 5000 : 2800);
   }
   var categoryOf = (r) => r.type === "income" ? { id: "income", name: "収入", icon: "wallet", color: vividColors.income } : data.categories.find((c) => c.id === r.category) || data.categories.find((c) => c.id === "other");
   function monthRecords() {
@@ -849,26 +937,22 @@ dialog.alert::backdrop{background:rgba(0,0,0,.25)}
   }
   function recordView() {
     const current = totals(data.records.filter((r) => r.date.startsWith(localDate().slice(0, 7))));
-    const today = new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric", weekday: "short" }).format(/* @__PURE__ */ new Date());
-    return `${largeTitle("記録")}<p class="date-sub">${today}</p>
- <div class="seg" role="group" aria-label="収支の種類"><button type="button" data-type="expense" class="${draft.type === "expense" ? "on" : ""}" aria-pressed="${draft.type === "expense"}">支出</button><button type="button" data-type="income" class="${draft.type === "income" ? "on" : ""}" aria-pressed="${draft.type === "income"}">収入</button></div>
- <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><output id="quick" class="voice-result" aria-label="音声入力の結果" aria-live="polite">${escape(quick)}</output><span id="parse-status" class="voice-status" aria-live="polite"></span></section>
- <div class="list-header"><span>よく使う</span></div>
- <div id="suggestions" class="suggestions">${suggestionsView()}</div>
+    const today = new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", weekday: "short" }).format(/* @__PURE__ */ new Date());
+    return `<div class="large-title-row rec-head"><div><h1 class="large-title">記録</h1><p class="date-sub">${today}</p></div><div class="seg seg-sm" role="group" aria-label="収支の種類"><button type="button" data-type="expense" class="${draft.type === "expense" ? "on" : ""}" aria-pressed="${draft.type === "expense"}">支出</button><button type="button" data-type="income" class="${draft.type === "income" ? "on" : ""}" aria-pressed="${draft.type === "income"}">収入</button></div></div>
+ <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><div id="quick" class="voice-result" contenteditable="plaintext-only" role="textbox" aria-label="ひとこと入力" enterkeyhint="done" autocapitalize="off" data-ph="話すか、ここに入力">${escape(quick)}</div><span id="parse-status" class="voice-status" aria-live="polite"></span></section>
+ <div id="suggestions" class="suggestions" aria-label="よく使う記録">${suggestionsView()}</div>
  <form id="entry-form" novalidate>
- <div class="list-header"><span>内容</span></div>
  <div class="amount-card"><label class="amount-label" for="amount">金額</label><div class="amount-line"><span class="yen" aria-hidden="true">¥</span><input id="amount" class="amount-input" type="text" inputmode="numeric" enterkeyhint="done" autocomplete="off" placeholder="0" value="${escape(draft.amount ? yen(Number(draft.amount)) : "")}" required></div></div>
- <div class="group" style="margin-top:12px"><div class="cell"><span class="cell-label" id="date-label">日付</span><div class="date-row"><button type="button" class="date-pill ${draft.date === localDate() ? "on" : ""}" data-date="0">今日</button><button type="button" class="date-pill ${draft.date === localDate(new Date(Date.now() - 864e5)) ? "on" : ""}" data-date="-1">昨日</button><input id="date" type="date" class="date-input" value="${escape(draft.date)}" required aria-labelledby="date-label"></div></div>
+ <div class="group rec-details"><div class="cell"><span class="cell-label" id="date-label">日付</span><div class="date-row"><button type="button" class="date-pill ${draft.date === localDate() ? "on" : ""}" data-date="0">今日</button><button type="button" class="date-pill ${draft.date === localDate(new Date(Date.now() - 864e5)) ? "on" : ""}" data-date="-1">昨日</button><input id="date" type="date" class="date-input" value="${escape(draft.date)}" required aria-labelledby="date-label"></div></div>
  <div class="cell"><label class="cell-label" for="memo">メモ</label><input id="memo" class="cell-input" placeholder="お店や買ったもの" value="${escape(draft.memo)}"></div></div>
- <div class="list-header"><span id="category-label">カテゴリ</span><span class="recognition" id="recognition">${escape(draft.source)}</span></div>
- <div class="group"><div class="category-grid" id="category-grid" role="group" aria-labelledby="category-label">${categoryButtons()}</div></div>
+ <div class="group rec-cats"><div class="cat-head"><span id="category-label">カテゴリ</span><span class="recognition" id="recognition">${escape(draft.source)}</span></div><div class="category-grid" id="category-grid" role="group" aria-labelledby="category-label">${categoryButtons()}</div></div>
  <p class="error-text" id="entry-error" aria-live="polite"></p>
  <button class="save-button" type="submit">${icon("plus")} 記録する</button></form>
  <div class="list-header"><h2>${(/* @__PURE__ */ new Date()).getMonth() + 1}月</h2><a href="#report">レポート</a></div>
  <div class="group"><div class="cell"><span>支出</span><span class="cell-value strong">${money(current.expense)}</span></div><div class="cell"><span>収入</span><span class="cell-value">${money(current.income)}</span></div><div class="cell"><span>収支</span><span class="cell-value">${money(current.income - current.expense)}</span></div></div>
  <div class="list-header"><h2>最近の記録</h2><a href="#history">すべて表示</a></div>
- <div class="group">${data.records.length ? sorted(data.records).slice(0, 5).map((r) => row(r, true)).join("") : empty("まだ記録がありません", "「よく使う」の候補をタップすると、すぐに試せます。")}</div>
- <p class="list-footer">${LOCAL_ONLY ? "記録はこのブラウザに保存されます。設定からバックアップを作れます。" : "同じアカウントで端末間を同期します。"}</p>`;
+ <div class="group">${data.records.length ? sorted(data.records).slice(0, 5).map((r) => row(r, true)).join("") : empty("まだ記録がありません", "上の候補をタップすると、すぐに試せます。")}</div>
+ <p class="list-footer">${LOCAL_ONLY ? "記録はこの端末に保存されます。設定からバックアップを作れます。" : "同じアカウントで端末間を同期します。"}</p>`;
   }
   function currentSuggestions() {
     return frequentEntries(data.records, data.quickPresets || [], draft.type).map((candidate) => ({ ...candidate, category: candidate.type === "income" ? "income" : data.categories.some((c) => c.id === candidate.category) ? candidate.category : "other" }));
@@ -994,6 +1078,16 @@ dialog.alert::backdrop{background:rgba(0,0,0,.25)}
       if (/^\d+$/.test(value)) $("#amount").value = yen(Number(value));
     };
     $("#mic").onclick = startVoice;
+    const q = $("#quick");
+    q.onkeydown = (e) => {
+      if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        q.blur();
+      }
+    };
+    q.onblur = () => {
+      if (q.textContent.trim() && q.textContent !== lastParsedQuick) applyQuick();
+    };
     $("#entry-form").onsubmit = async (e) => {
       e.preventDefault();
       syncDraft();
@@ -1046,11 +1140,45 @@ dialog.alert::backdrop{background:rgba(0,0,0,.25)}
     },
     onError: (error) => {
       const messages = { unsupported: "このブラウザでは音声認識を使えません。下の金額・メモ欄からも記録できます。", "not-allowed": "マイクへのアクセスが許可されていません。ブラウザの設定を確認してください。", "service-not-allowed": "ブラウザの音声認識が許可されていません。下の金額・メモ欄からも記録できます。", "no-speech": "音声を聞き取れませんでした。マイクを押してもう一度お試しください。", network: "音声認識に接続できません。もう一度押すか、文字で入力してください。", timeout: "音声入力の応答がなかったためリセットしました。マイクを押して再試行できます。", "audio-capture": "マイクを使えません。他のアプリの録音を止めて再試行してください。" };
-      toast(messages[error] || "音声入力を開始できませんでした。マイクを押して再試行できます。");
+      if (["unsupported", "not-allowed", "service-not-allowed", "audio-capture"].includes(error)) {
+        try {
+          localStorage.setItem(VOICE_FALLBACK_KEY, "1");
+        } catch {
+        }
+        if ($("#parse-status")) $("#parse-status").textContent = "次から「話して入力」を押すと、キーボードの音声入力で話せます。";
+        toast("音声認識を使えませんでした。もう一度「話して入力」を押すと、キーボードのマイクで話せます。");
+        return;
+      }
+      toast(messages[error] || "音声入力を開始できませんでした。もう一度押してください。");
     }
   });
+  var VOICE_FALLBACK_KEY = "hitokoto-voice-fallback";
+  function useKeyboardDictation(message) {
+    const q = $("#quick");
+    if (!q) return;
+    q.focus();
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(q);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch {
+    }
+    $("#parse-status").textContent = message || "キーボードのマイクボタンを押して話してください。";
+  }
   function startVoice() {
     syncDraft();
+    let fallback = false;
+    try {
+      fallback = localStorage.getItem(VOICE_FALLBACK_KEY) === "1";
+    } catch {
+    }
+    if (fallback || !(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+      useKeyboardDictation();
+      return;
+    }
     voice.start();
   }
   function sorted(records) {
@@ -1435,6 +1563,14 @@ dialog.alert::backdrop{background:rgba(0,0,0,.25)}
   });
   window.addEventListener("pagehide", () => voice.cancel());
   window.addEventListener("hashchange", navigate);
+  const hideToast = (e) => {
+    const el = $("#toast");
+    if (el.classList.contains("show") && !(e && e.target && el.contains(e.target))) {
+      clearTimeout(toastTimer);
+      el.classList.remove("show");
+    }
+  };
+  document.addEventListener("pointerdown", hideToast, true);
   navigate();
   
   refreshLedger(true);
