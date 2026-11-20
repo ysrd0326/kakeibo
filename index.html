@@ -432,6 +432,20 @@ dialog.alert{background:var(--glass-bg);-webkit-backdrop-filter:blur(30px) satur
 main{padding-bottom:calc(84px + var(--safe-b))}
 #toast{bottom:calc(76px + var(--safe-b))}
 
+
+/* Pin shortcuts and explain voice failures without disabling later attempts. */
+.suggestion-pin{width:40px;min-height:40px;display:grid;place-items:center;flex:none;color:var(--label-2)}
+.suggestion-pin svg{width:17px;height:17px}
+.suggestion-pin[aria-pressed="true"]{color:var(--tint)}
+.suggestion-pin[aria-pressed="true"] svg{fill:var(--tint-soft);stroke-width:2.3}
+.suggestion.is-pinned{box-shadow:inset 0 0 0 1.5px var(--tint)}
+.pin-setting{display:flex;align-items:center;gap:10px;padding:16px 4px;font-size:17px}
+.pin-setting input{width:22px;height:22px;accent-color:var(--tint);margin:0;flex:none}
+.voice-error{font-size:15px;line-height:1.5;color:var(--red);padding:8px 6px 2px}
+.voice-error[hidden]{display:none}
+.voice-error button{font-size:14px;color:var(--tint);text-decoration:underline;padding:10px 0 4px;min-height:44px;margin-right:16px}
+.voice-help-list{font-size:17px;line-height:1.6;padding-left:22px}.voice-help-list li{margin-bottom:12px}
+.voice-diagnostic{font-size:14px;line-height:1.6;color:var(--label-2);overflow-wrap:anywhere}
   </style>
 </head>
 <body>
@@ -469,7 +483,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
       ids.add(r.id);
       return { id: r.id, amount: r.amount, memo: r.memo, date: r.date, category: r.category, type: r.type };
     });
-    const quickPresets = (Array.isArray(value.quickPresets) ? value.quickPresets : []).filter((p) => p && typeof p.key === "string" && p.key.length < 550 && typeof p.memo === "string" && p.memo.length <= 500 && isAmount(p.amount) && isType(p.type) && validCategory(p)).slice(0, 100).map(({ key, memo, amount, category, type }) => ({ key, memo, amount, category, type }));
+    const quickPresets = (Array.isArray(value.quickPresets) ? value.quickPresets : []).filter((p) => p && typeof p.key === "string" && p.key.length < 550 && typeof p.memo === "string" && p.memo.length <= 500 && isAmount(p.amount) && isType(p.type) && validCategory(p)).slice(0, 100).map(({ key, memo, amount, category, type, pinned }) => ({ key, memo, amount, category, type, ...(pinned === true ? { pinned: true } : {}) }));
     return { records, categories, quickPresets };
   }
   function mergeLegacyLedger(cloud, legacy2) {
@@ -575,134 +589,124 @@ main{padding-bottom:calc(84px + var(--safe-b))}
   }
 
   // work/hitokoto/public/voice.js?v=20261106-1
-  function createVoiceInput({ getRecognition, onState = () => {
-  }, onTranscript = () => {
-  }, onError = () => {
-  }, setTimer = setTimeout, clearTimer = clearTimeout, timeoutMs = 2e4 }) {
-    let active = null;
-    function release(session, abort = true) {
-      if (active !== session) return;
-      active = null;
-      clearTimer(session.timer);
-      session.engine.onresult = session.engine.onerror = session.engine.onend = null;
-      if (abort) {
-        try {
-          session.engine.abort();
-        } catch {
-        }
-      }
-      onState(false);
-    }
-    function stop() {
-      if (!active) return;
-      const session = active;
-      try {
-        session.engine.stop();
-      } catch {
-        release(session);
-        return;
-      }
-      if (active === session) {
-        clearTimer(session.timer);
-        session.timer = setTimer(() => release(session), 1200);
-      }
-    }
-    function start() {
-      if (active) {
-        stop();
-        return;
-      }
-      let engine;
-      try {
-        const Recognition = getRecognition();
-        if (!Recognition) {
-          onError("unsupported");
-          return;
-        }
-        engine = new Recognition();
-      } catch {
-        onError("start-failed");
-        return;
-      }
-      const session = { engine, timer: null };
-      active = session;
-      engine.lang = "ja-JP";
-      engine.interimResults = true;
-      engine.continuous = false;
-      engine.maxAlternatives = 1;
-      engine.onresult = (event) => {
-        if (active !== session) return;
-        const results = Array.from(event.results || []), text = results.map((result) => result[0]?.transcript || "").join(""), final = results.length > 0 && results.every((result) => result.isFinal);
-        if (final) release(session);
-        if (text) onTranscript(text, final);
-      };
-      engine.onerror = (event) => {
-        if (active !== session) return;
-        const error = event.error || "start-failed";
-        release(session);
-        if (error !== "aborted") onError(error);
-      };
-      engine.onend = () => {
-        if (active === session) release(session, false);
-      };
-      onState(true);
-      session.timer = setTimer(() => {
-        if (active === session) {
-          release(session);
-          onError("timeout");
-        }
-      }, timeoutMs);
-      try {
-        engine.start();
-      } catch {
-        release(session);
-        onError("start-failed");
-      }
-    }
-    return { start, stop, cancel() {
-      if (active) release(active);
-    }, get listening() {
-      return active !== null;
-    } };
-  }
+// Each attempt owns its handlers. Late events cannot clear a newer attempt.
+function createVoiceInput({getRecognition,onState=()=>{},onTranscript=()=>{},onError=()=>{},setTimer=setTimeout,clearTimer=clearTimeout,timeoutMs=20000}){
+ let active=null;
+ function release(session,abort=true){
+  if(active!==session)return;
+  active=null;clearTimer(session.timer);
+  session.engine.onresult=session.engine.onerror=session.engine.onend=null;
+  if(abort){try{session.engine.abort();}catch{}}
+  onState(false);
+ }
+ function finish(session){
+  if(active!==session)return;
+  const text=session.text,delivered=session.delivered;
+  release(session,false);
+  // Safari may finish with only an interim result; do not silently lose it.
+  if(text&&!delivered)onTranscript(text,true);
+  else if(!text)onError('no-speech');
+ }
+ function stop(){
+  if(!active)return;
+  const session=active;
+  try{session.engine.stop();}catch{release(session);if(session.text&&!session.delivered)onTranscript(session.text,true);return;}
+  // Leave time for the final result, but recover even if WebKit omits `end`.
+  if(active===session){clearTimer(session.timer);session.timer=setTimer(()=>{
+   if(active!==session)return;
+   const text=session.text,delivered=session.delivered;
+   release(session);
+   if(text&&!delivered)onTranscript(text,true);
+   else if(!text)onError('no-speech');
+  },1200);}
+ }
+ function start(){
+  if(active){stop();return;}
+  let engine;
+  try{const Recognition=getRecognition();if(!Recognition){onError('unsupported');return;}engine=new Recognition();}catch{onError('start-failed');return;}
+  const session={engine,timer:null,text:'',delivered:false};active=session;
+  engine.lang='ja-JP';engine.interimResults=true;engine.continuous=false;engine.maxAlternatives=1;
+  engine.onresult=event=>{
+   if(active!==session||session.delivered)return;
+   const results=Array.from(event.results||[]),text=results.map(result=>result[0]?.transcript||'').join(''),final=results.length>0&&results.every(result=>result.isFinal);
+   session.text=text;
+   if(final){
+    // A successful result does not need abort(). Abruptly cancelling here can
+    // disrupt the next WebKit session. Let stop/end drain, with a bounded reset.
+    session.delivered=true;
+    if(text)onTranscript(text,true);
+    stop();
+   }else if(text)onTranscript(text,false);
+  };
+  engine.onerror=event=>{
+   if(active!==session)return;
+   const error=event.error||'start-failed',text=session.text,delivered=session.delivered;
+   release(session);
+   if(delivered)return;
+   if(error==='aborted'&&text&&!delivered)onTranscript(text,true);
+   else if(error!=='aborted')onError(error);
+   else if(!text)onError('aborted');
+  };
+  engine.onend=()=>finish(session);
+  onState(true);
+  session.timer=setTimer(()=>{if(active===session){const text=session.text,delivered=session.delivered;release(session);if(text&&!delivered)onTranscript(text,true);else if(!delivered)onError('timeout');}},timeoutMs);
+  try{engine.start();}catch(error){release(session);onError(error?.name==='NotAllowedError'?'not-allowed':'start-failed');}
+ }
+ return {start,stop,cancel(){if(active)release(active);},get listening(){return active!==null;}};
+}
+
+function voiceErrorMessage(code){
+ const messages={
+  unsupported:'この画面ではブラウザの音声認識機能が提供されていません。Safariで同じサイトを開いてお試しください。',
+  'insecure-context':'音声入力には安全な接続が必要です。httpsで始まる家計簿のURLを開いてください。',
+  'not-allowed':'マイクまたは音声認識の利用が許可されていません。サイトのマイク許可とSiriの設定を確認してください。',
+  'service-not-allowed':'端末の音声認識サービスが利用できません。iPhoneのSiriが有効か確認してください。',
+  'no-speech':'音声を聞き取れませんでした。「音声入力」を押してもう一度お話しください。',
+  network:'音声認識サービスに接続できませんでした。通信を確認してもう一度お試しください。',
+  timeout:'音声認識が応答しませんでした。入力をリセットしました。もう一度試せます。',
+  'audio-capture':'マイクを取得できませんでした。他のアプリの録音や通話を終了してお試しください。',
+  aborted:'端末によって音声認識が中断されました。「音声入力」を押してもう一度お試しください。',
+  'language-not-supported':'この端末の音声認識で日本語を利用できません。Siriの言語設定を確認してください。'
+ };
+ return messages[code]||'音声入力を開始できませんでした。入力をリセットしたので、もう一度試せます。';
+}
+
 
   // work/hitokoto/public/suggestions.js?v=20261106-1
-  function suggestionKey(entry) {
-    return `${entry.type}:${entry.memo.normalize("NFKC").trim().toLowerCase() || "#" + entry.category}`;
-  }
-  function frequentEntries(records, overrides = [], type = "expense", limit = 3) {
-    const groups = /* @__PURE__ */ new Map();
-    const ordered = records.filter((record) => record.type === type).map((record, index) => ({ ...record, index })).sort((a, b) => b.date.localeCompare(a.date) || a.index - b.index);
-    for (const record of ordered) {
-      const key = suggestionKey(record);
-      if (!groups.has(key)) groups.set(key, { ...record, key, count: 0, amounts: /* @__PURE__ */ new Map() });
-      const group = groups.get(key);
-      group.count++;
-      group.amounts.set(record.amount, (group.amounts.get(record.amount) || 0) + 1);
-    }
-    const ranked = [...groups.values()].sort((a, b) => b.count - a.count || b.date.localeCompare(a.date) || a.index - b.index).map((group) => {
-      const amount = [...group.amounts].sort((a, b) => b[1] - a[1])[0][0];
-      return { key: group.key, memo: group.memo, category: group.category, type, amount, count: group.count };
-    });
-    const examples = type === "expense" ? [{ memo: "松屋", amount: 800, category: "dining" }, { memo: "スーパー", amount: 2400, category: "food" }, { memo: "電車", amount: 320, category: "transport" }] : [{ memo: "給料", amount: 25e4, category: "income" }, { memo: "お小遣い", amount: 1e4, category: "income" }];
-    for (const example of examples) {
-      const candidate = { ...example, type, count: 0 };
-      candidate.key = suggestionKey(candidate);
-      if (!ranked.some((r) => r.key === candidate.key)) ranked.push(candidate);
-    }
-    const seen = /* @__PURE__ */ new Set();
-    return ranked.map((candidate) => ({ ...candidate, ...overrides.find((override) => override.key === candidate.key) })).filter((candidate) => {
-      const identity = `${suggestionKey(candidate)}:${candidate.amount}:${candidate.category}`;
-      if (seen.has(identity)) return false;
-      seen.add(identity);
-      return true;
-    }).slice(0, limit);
-  }
+function suggestionKey(entry){return `${entry.type}:${entry.memo.normalize('NFKC').trim().toLowerCase()||'#'+entry.category}`;}
+function frequentEntries(records,overrides=[],type='expense',limit=3){
+ const groups=new Map();
+ const ordered=records.filter(record=>record.type===type).map((record,index)=>({...record,index})).sort((a,b)=>b.date.localeCompare(a.date)||a.index-b.index);
+ for(const record of ordered){
+  const key=suggestionKey(record);
+  if(!groups.has(key))groups.set(key,{...record,key,count:0,amounts:new Map()});
+  const group=groups.get(key);group.count++;
+  group.amounts.set(record.amount,(group.amounts.get(record.amount)||0)+1);
+ }
+ const ranked=[...groups.values()].sort((a,b)=>b.count-a.count||b.date.localeCompare(a.date)||a.index-b.index).map(group=>{
+  const amount=[...group.amounts].sort((a,b)=>b[1]-a[1])[0][0];
+  return {key:group.key,memo:group.memo,category:group.category,type,amount,count:group.count};
+ });
+ const examples=type==='expense'?[{memo:'松屋',amount:800,category:'dining'},{memo:'スーパー',amount:2400,category:'food'},{memo:'電車',amount:320,category:'transport'}]:[{memo:'給料',amount:250000,category:'income'},{memo:'お小遣い',amount:10000,category:'income'}];
+ for(const example of examples){const candidate={...example,type,count:0};candidate.key=suggestionKey(candidate);if(!ranked.some(r=>r.key===candidate.key))ranked.push(candidate);}
+ // Pins are saved snapshots, so they survive changes to history and ranking.
+ const presets=overrides.filter(p=>p.type===type);
+ const pins=presets.filter(p=>p.pinned).map(p=>({...p,count:groups.get(p.key)?.count||0}));
+ const candidates=ranked.map(candidate=>({...candidate,...presets.find(p=>p.key===candidate.key)}));
+ for(const preset of presets)if(!candidates.some(c=>c.key===preset.key))candidates.push({...preset,count:0});
+ const seen=new Set(),keys=new Set();
+ return [...pins,...candidates].filter(candidate=>{
+  const identity=`${suggestionKey(candidate)}:${candidate.amount}:${candidate.category}`;
+  if(keys.has(candidate.key)||seen.has(identity))return false;
+  keys.add(candidate.key);seen.add(identity);return true;
+ }).slice(0,Math.max(limit,pins.length));
+}
+
 
   // work/hitokoto/public/app.js
   var $ = (s, root = document) => root.querySelector(s);
   var $$ = (s, root = document) => [...root.querySelectorAll(s)];
-  var paths = { edit: "M12 20H4v-8M15 4l5 5M9 15l-1 4 4-1L21 9a3.5 3.5 0 0 0-5-5z", search: "M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0", calendar: "M4 5h16v16H4zM8 3v4M16 3v4M4 10h16M8 14h2M14 14h2M8 17h2", chart: "M12 3v9h9M9 3.6A9 9 0 1 0 20.4 15", settings: "M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0", basket: "M3 8h18l-2 12H5zM7 8l5-6 5 6M9 12v4M15 12v4", utensils: "M5 2v6c0 3 6 3 6 0V2M8 2v20M20 22V2c-6 4-5 10 0 10", bag: "M5 7h14l2 14H3zM8 7V6a4 4 0 0 1 8 0v1", train: "M6 18l-2 4M18 18l2 4M5 3h14v15H5zM5 11h14M12 3v8M8 15h.1M16 15h.1", gift: "M3 10h18v4H3zM5 14v7h14v-7M12 10v11M12 10C2 10 4 0 9 4l3 6c10 0 8-10 3-6z", headphones: "M3 14v-3a9 9 0 0 1 18 0v3M3 12h4v9H3zM17 12h4v9h-4z", activity: "M3 12h4l3-9 4 18 3-9h4", dots: "M5 12h.1M12 12h.1M19 12h.1", mic: "M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0zM5 10v2a7 7 0 0 0 14 0v-2M12 19v3M9 22h6", spark: "M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5zM20 2v4M18 4h4", arrow: "M4 12h16M15 7l5 5-5 5", left: "M15 5l-7 7 7 7", right: "M9 5l7 7-7 7", check: "M5 12l4 4L19 6", repeat: "M3 8h16l-4-4M21 16H5l4 4M3 8v5M21 16v-5", lock: "M6 10h12v11H6zM8 10V6a4 4 0 0 1 8 0v4", leaf: "M20 3C6 1 0 18 12 19c9 0 8-16 8-16zM6 22L17 8", download: "M12 3v12M7 10l5 5 5-5M4 17v4h16v-4", upload: "M12 16V4M7 9l5-5 5 5M4 17v4h16v-4", trash: "M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7", plus: "M12 4v16M4 12h16", close: "M5 5l14 14M19 5L5 19", up: "M5 15l7-7 7 7", down: "M5 9l7 7 7-7", wallet: "M4 5h15v15H4zM4 5l13-3v3M15 11h6v5h-6z", chev: "M9 5l7 7-7 7", pencil: "M15 4l5 5L9 20H4v-5z" };
+  var paths = { edit: "M12 20H4v-8M15 4l5 5M9 15l-1 4 4-1L21 9a3.5 3.5 0 0 0-5-5z", search: "M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0", calendar: "M4 5h16v16H4zM8 3v4M16 3v4M4 10h16M8 14h2M14 14h2M8 17h2", chart: "M12 3v9h9M9 3.6A9 9 0 1 0 20.4 15", settings: "M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0", basket: "M3 8h18l-2 12H5zM7 8l5-6 5 6M9 12v4M15 12v4", utensils: "M5 2v6c0 3 6 3 6 0V2M8 2v20M20 22V2c-6 4-5 10 0 10", bag: "M5 7h14l2 14H3zM8 7V6a4 4 0 0 1 8 0v1", train: "M6 18l-2 4M18 18l2 4M5 3h14v15H5zM5 11h14M12 3v8M8 15h.1M16 15h.1", gift: "M3 10h18v4H3zM5 14v7h14v-7M12 10v11M12 10C2 10 4 0 9 4l3 6c10 0 8-10 3-6z", headphones: "M3 14v-3a9 9 0 0 1 18 0v3M3 12h4v9H3zM17 12h4v9h-4z", activity: "M3 12h4l3-9 4 18 3-9h4", dots: "M5 12h.1M12 12h.1M19 12h.1", mic: "M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0zM5 10v2a7 7 0 0 0 14 0v-2M12 19v3M9 22h6", spark: "M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5zM20 2v4M18 4h4", arrow: "M4 12h16M15 7l5 5-5 5", left: "M15 5l-7 7 7 7", right: "M9 5l7 7-7 7", check: "M5 12l4 4L19 6", repeat: "M3 8h16l-4-4M21 16H5l4 4M3 8v5M21 16v-5", lock: "M6 10h12v11H6zM8 10V6a4 4 0 0 1 8 0v4", leaf: "M20 3C6 1 0 18 12 19c9 0 8-16 8-16zM6 22L17 8", download: "M12 3v12M7 10l5 5 5-5M4 17v4h16v-4", upload: "M12 16V4M7 9l5-5 5 5M4 17v4h16v-4", trash: "M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7", plus: "M12 4v16M4 12h16", close: "M5 5l14 14M19 5L5 19", up: "M5 15l7-7 7 7", down: "M5 9l7 7 7-7", wallet: "M4 5h15v15H4zM4 5l13-3v3M15 11h6v5h-6z", chev: "M9 5l7 7-7 7", pencil: "M15 4l5 5L9 20H4v-5z", pin: "M9 3h6l-1 6 4 4H6l4-4-1-6M12 13v8" };
   function icon(name, cls = "") {
     return `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name] || paths.dots}"/></svg>`;
   }
@@ -966,7 +970,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
     return validate({ records: fixed, categories, quickPresets });
   }
   function applyCloudData(next) {
-    const editing = $("dialog[open]") || document.activeElement?.matches("input,textarea,select,[contenteditable]");
+    const editing = voice.listening || $("dialog[open]") || document.activeElement?.matches("input,textarea,select,[contenteditable]");
     try {
       localStorage.setItem(STORE, JSON.stringify(next));
     } catch {
@@ -1187,7 +1191,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
     const current = totals(data.records.filter((r) => r.date.startsWith(localDate().slice(0, 7))));
     const today = new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", weekday: "short" }).format(/* @__PURE__ */ new Date());
     return `<div class="large-title-row rec-head"><div><h1 class="large-title">記録</h1><p class="date-sub">${today}</p></div><div class="seg seg-sm" role="group" aria-label="収支の種類"><button type="button" data-type="expense" class="${draft.type === "expense" ? "on" : ""}" aria-pressed="${draft.type === "expense"}">支出</button><button type="button" data-type="income" class="${draft.type === "income" ? "on" : ""}" aria-pressed="${draft.type === "income"}">収入</button></div></div>
- <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><div id="quick" class="voice-result" contenteditable="plaintext-only" role="textbox" aria-label="ひとこと入力" enterkeyhint="done" autocapitalize="off" data-ph="話すか、ここに入力">${escape(quick)}</div><span id="parse-status" class="voice-status" aria-live="polite"></span></section>
+ <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><div id="quick" class="voice-result" contenteditable="plaintext-only" role="textbox" aria-label="ひとこと入力" enterkeyhint="done" autocapitalize="off" data-ph="話すか、ここに入力">${escape(quick)}</div><span id="parse-status" class="voice-status" aria-live="polite"></span><div id="voice-error" class="voice-error" role="alert" hidden><span id="voice-error-text"></span><button type="button" id="voice-help">原因・対処を見る</button><button type="button" id="keyboard-dictation">キーボード音声を使う</button></div></section>
  <h2 class="sec-head">${icon("repeat")}よく使う</h2>
  <div id="suggestions" class="suggestions" aria-label="よく使う記録">${suggestionsView()}</div>
  <form id="entry-form" novalidate>
@@ -1211,7 +1215,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
   function suggestionsView() {
     return currentSuggestions().map((candidate, index) => {
       const name = candidate.memo || categoryOf(candidate).name, label = `${name} ${money(candidate.amount)}`;
-      return `<div class="suggestion"><button type="button" class="suggestion-use" data-suggest="${index}" aria-label="${escape(label)}を入力">${escape(name)} <b>${money(candidate.amount)}</b></button><button type="button" class="suggestion-edit" data-edit-suggest="${index}" aria-label="${escape(label)}の候補を編集">${icon("pencil")}</button></div>`;
+      return `<div class="suggestion ${candidate.pinned ? "is-pinned" : ""}"><button type="button" class="suggestion-use" data-suggest="${index}" aria-label="${escape(label)}を入力">${escape(name)} <b>${money(candidate.amount)}</b></button><button type="button" class="suggestion-pin" data-pin-suggest="${index}" aria-pressed="${Boolean(candidate.pinned)}" aria-label="${escape(label)}の${candidate.pinned ? "ピン留めを解除" : "ピン留め"}" title="${candidate.pinned ? "固定済み・押すと解除" : "先頭に固定する"}">${icon("pin")}</button><button type="button" class="suggestion-edit" data-edit-suggest="${index}" aria-label="${escape(label)}の候補を編集">${icon("pencil")}</button></div>`;
     }).join("");
   }
   function applySuggestion(candidate) {
@@ -1223,6 +1227,10 @@ main{padding-bottom:calc(84px + var(--safe-b))}
     $("#parse-status").textContent = "内容を確認して記録できます";
   }
   function bindSuggestions() {
+    $$("[data-pin-suggest]").forEach((button) => button.onclick = async () => {
+      syncDraft();
+      await toggleSuggestionPin(currentSuggestions()[Number(button.dataset.pinSuggest)]);
+    });
     $$("[data-suggest]").forEach((button) => button.onclick = () => {
       syncDraft();
       applySuggestion(currentSuggestions()[Number(button.dataset.suggest)]);
@@ -1232,10 +1240,23 @@ main{padding-bottom:calc(84px + var(--safe-b))}
       editSuggestion(currentSuggestions()[Number(button.dataset.editSuggest)]);
     });
   }
+  async function toggleSuggestionPin(candidate) {
+    const preset = { key: candidate.key, memo: candidate.memo, amount: candidate.amount, category: candidate.category, type: candidate.type, ...(!candidate.pinned ? { pinned: true } : {}) };
+    const presets = [...(data.quickPresets || [])], index = presets.findIndex(p => p.key === preset.key);
+    if (index < 0) {
+      if (presets.length >= 100) { toast("入力候補は100件まで保存できます。"); return; }
+      presets.push(preset);
+    } else presets[index] = preset;
+    if (await persist({ ...data, quickPresets: presets })) {
+      $("#suggestions").innerHTML = suggestionsView();
+      bindSuggestions();
+      toast(candidate.pinned ? "ピン留めを解除しました" : "ピン留めしました。使用回数が変わっても先頭に表示します。");
+    }
+  }
   function editSuggestion(candidate) {
     voice.cancel();
     const baseRevision = revision;
-    const dialog = openSheet("よく使う記録", `<p class="sheet-note">次回から、この内容を入力候補に表示します。</p><form id="suggest-form" novalidate><div class="amount-card"><label class="amount-label" for="suggest-amount">金額</label><div class="amount-line"><span class="yen" aria-hidden="true">¥</span><input id="suggest-amount" class="amount-input" type="text" inputmode="numeric" autocomplete="off" value="${candidate.amount}" required></div></div><div class="group" style="margin-top:12px"><div class="cell"><label class="cell-label" for="suggest-memo">メモ</label><input id="suggest-memo" class="cell-input" placeholder="お店や買ったもの" value="${escape(candidate.memo)}"></div><div class="cell"><label class="cell-label" for="suggest-category">カテゴリ</label><select id="suggest-category" class="cell-input">${candidate.type === "income" ? '<option value="income">収入</option>' : data.categories.map((category) => `<option value="${escape(category.id)}" ${category.id === candidate.category ? "selected" : ""}>${escape(category.name)}</option>`).join("")}</select></div></div><p class="error-text" id="suggest-error" aria-live="polite"></p></form>`, "保存", "suggest-form");
+    const dialog = openSheet("よく使う記録", `<p class="sheet-note">ピン留めすると、使用回数が変わっても先頭に固定できます。</p><form id="suggest-form" novalidate><div class="amount-card"><label class="amount-label" for="suggest-amount">金額</label><div class="amount-line"><span class="yen" aria-hidden="true">¥</span><input id="suggest-amount" class="amount-input" type="text" inputmode="numeric" autocomplete="off" value="${candidate.amount}" required></div></div><div class="group" style="margin-top:12px"><div class="cell"><label class="cell-label" for="suggest-memo">メモ</label><input id="suggest-memo" class="cell-input" placeholder="お店や買ったもの" value="${escape(candidate.memo)}"></div><div class="cell"><label class="cell-label" for="suggest-category">カテゴリ</label><select id="suggest-category" class="cell-input">${candidate.type === "income" ? '<option value="income">収入</option>' : data.categories.map((category) => `<option value="${escape(category.id)}" ${category.id === candidate.category ? "selected" : ""}>${escape(category.name)}</option>`).join("")}</select></div></div><label class="pin-setting"><input id="suggest-pinned" type="checkbox" ${candidate.pinned ? "checked" : ""}><span>この項目をピン留めする</span></label><p class="error-text" id="suggest-error" aria-live="polite"></p></form>`, "保存", "suggest-form");
     $("#suggest-form").onsubmit = async (event) => {
       event.preventDefault();
       const amount = Number($("#suggest-amount").value.normalize("NFKC").replaceAll(",", "").trim());
@@ -1248,8 +1269,9 @@ main{padding-bottom:calc(84px + var(--safe-b))}
         $("#suggest-error").textContent = "メモは500文字以内で入力してください。";
         return;
       }
-      const preset = { key: candidate.key, memo: $("#suggest-memo").value.trim(), amount, category: $("#suggest-category").value, type: candidate.type };
-      if (await persist({ ...data, quickPresets: [preset, ...(data.quickPresets || []).filter((p) => p.key !== preset.key)].slice(0, 100) }, { baseRevision })) {
+      const preset = { key: candidate.key, memo: $("#suggest-memo").value.trim(), amount, category: $("#suggest-category").value, type: candidate.type, ...($("#suggest-pinned").checked ? { pinned: true } : {}) };
+      if (!data.quickPresets.some(p => p.key === preset.key) && data.quickPresets.length >= 100) { $("#suggest-error").textContent = "入力候補は100件まで保存できます。"; return; }
+      if (await persist({ ...data, quickPresets: data.quickPresets.some(p => p.key === preset.key) ? data.quickPresets.map(p => p.key === preset.key ? preset : p) : [...data.quickPresets, preset] }, { baseRevision })) {
         dialog.close();
         applySuggestion({ ...candidate, ...preset });
         toast("入力候補を更新しました");
@@ -1389,21 +1411,27 @@ main{padding-bottom:calc(84px + var(--safe-b))}
       $("#quick").textContent = text;
       if (final) applyQuick();
     },
-    onError: (error) => {
-      const messages = { unsupported: "このブラウザでは音声認識を使えません。下の金額・メモ欄からも記録できます。", "not-allowed": "マイクへのアクセスが許可されていません。ブラウザの設定を確認してください。", "service-not-allowed": "ブラウザの音声認識が許可されていません。下の金額・メモ欄からも記録できます。", "no-speech": "音声を聞き取れませんでした。マイクを押してもう一度お試しください。", network: "音声認識に接続できません。もう一度押すか、文字で入力してください。", timeout: "音声入力の応答がなかったためリセットしました。マイクを押して再試行できます。", "audio-capture": "マイクを使えません。他のアプリの録音を止めて再試行してください。" };
-      if (["unsupported", "not-allowed", "service-not-allowed", "audio-capture"].includes(error)) {
-        try {
-          localStorage.setItem(VOICE_FALLBACK_KEY, "1");
-        } catch {
-        }
-        if ($("#parse-status")) $("#parse-status").textContent = "次から「話して入力」を押すと、キーボードの音声入力で話せます。";
-        toast("音声認識を使えませんでした。もう一度「話して入力」を押すと、キーボードのマイクで話せます。");
-        return;
-      }
-      toast(messages[error] || "音声入力を開始できませんでした。もう一度押してください。");
-    }
+    onError: showVoiceError
   });
-  var VOICE_FALLBACK_KEY = "hitokoto-voice-fallback";
+  var lastVoiceError = null;
+  // Earlier versions made one failure a permanent keyboard-only preference.
+  // Remove just that preference; records and sync settings are untouched.
+  try { localStorage.removeItem("hitokoto-voice-fallback"); } catch {}
+  function showVoiceError(code) {
+    lastVoiceError = code;
+    const text = voiceErrorMessage(code);
+    if (page !== "record" || !$("#voice-error")) { toast(text); return; }
+    $("#voice-error").hidden = false;
+    $("#voice-error-text").textContent = text;
+    $("#voice-help").onclick = showVoiceHelp;
+    $("#keyboard-dictation").onclick = () => useKeyboardDictation();
+  }
+  function showVoiceHelp() {
+    const supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+    const standalone = Boolean(navigator.standalone || window.matchMedia?.("(display-mode: standalone)").matches);
+    const sheet = openSheet("音声入力の確認", `<form id="voice-retry-form"><p class="sheet-note">${escape(voiceErrorMessage(lastVoiceError))}</p><ul class="voice-help-list"><li>iPhoneの「設定」でSiriが有効か確認してください。Safariの音声認識にはSiriが必要です。</li><li>このサイトのマイク利用を許可してください。拒否した場合はSafariのサイト設定から変更できます。</li><li>録音中や通話中のアプリを止めてから、家計簿を閉じて開き直してください。</li></ul><p class="sheet-note">${standalone ? "ホーム画面版でだけ失敗する場合は、同じURLをSafariで開いてお試しください。" : "許可しても繰り返し失敗する場合は、iOSの音声認識側の問題の可能性があります。"}</p><p class="voice-diagnostic">音声認識：${supported ? "対応APIあり" : "この画面ではAPIなし"}<br>${standalone ? "ホーム画面版" : "ブラウザ版"} ／ エラー：${escape(lastVoiceError || "不明")}</p></form>`, "再試行", "voice-retry-form");
+    $("#voice-retry-form").onsubmit = e => { e.preventDefault(); sheet.close(); startVoice(); };
+  }
   function useKeyboardDictation(message) {
     const q = $("#quick");
     if (!q) return;
@@ -1421,15 +1449,9 @@ main{padding-bottom:calc(84px + var(--safe-b))}
   }
   function startVoice() {
     syncDraft();
-    let fallback = false;
-    try {
-      fallback = localStorage.getItem(VOICE_FALLBACK_KEY) === "1";
-    } catch {
-    }
-    if (fallback || !(window.SpeechRecognition || window.webkitSpeechRecognition)) {
-      useKeyboardDictation();
-      return;
-    }
+    if (!voice.listening && window.isSecureContext === false) { showVoiceError("insecure-context"); return; }
+    if (!voice.listening) { $("#voice-error").hidden = true; lastVoiceError = null; }
+    // Always attempt native recognition on this tap. Keyboard dictation is opt-in.
     voice.start();
   }
   function sorted(records) {
