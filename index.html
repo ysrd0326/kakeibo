@@ -446,6 +446,8 @@ main{padding-bottom:calc(84px + var(--safe-b))}
 .voice-error button{font-size:14px;color:var(--tint);text-decoration:underline;padding:10px 0 4px;min-height:44px;margin-right:16px}
 .voice-help-list{font-size:17px;line-height:1.6;padding-left:22px}.voice-help-list li{margin-bottom:12px}
 .voice-diagnostic{font-size:14px;line-height:1.6;color:var(--label-2);overflow-wrap:anywhere}
+.voice-continuous{display:flex;align-items:center;gap:6px;margin:5px 4px 0;font-size:14px;line-height:24px;min-height:28px;color:var(--label)}
+.voice-continuous input{width:18px;height:18px;margin:0;accent-color:var(--tint);flex:none}.voice-continuous span{font-size:12px;color:var(--label-2)}
   </style>
 </head>
 <body>
@@ -539,7 +541,58 @@ main{padding-bottom:calc(84px + var(--safe-b))}
     }
     return Math.round(total + section + Number(current));
   }
-  function parseEntry(input, categories = defaults, records = [], now = /* @__PURE__ */ new Date()) {
+  // Compare spellings without spaces, punctuation, width or kana differences.
+  function categoryText(value) {
+    return String(value || '').normalize('NFKC').toLowerCase()
+      .replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60))
+      .replace(/[\s\p{P}\p{S}]/gu, '');
+  }
+  function inferCategory(memo, text, categories, records = [], presets = []) {
+    const ids = new Set(categories.map(c => c.id));
+    const normalized = categoryText(memo), full = categoryText(text || memo);
+    const usable = entry => entry.type === 'expense' && entry.category !== 'other' && ids.has(entry.category) && categoryText(entry.memo);
+    const history = records.filter(usable).map((entry,index) => ({...entry,index})).sort((a,b) => b.date.localeCompare(a.date) || a.index-b.index);
+    // Edited shortcuts and the most recent known classification teach the next entry.
+    const learned = [...presets.filter(usable), ...history];
+    const exact = normalized && learned.find(entry => categoryText(entry.memo) === normalized);
+    if (exact) return {category:exact.category,source:'以前の記録から'};
+    const has = pattern => pattern.test(full);
+    const choose = (id,source='分類ルールから') => ids.has(id) ? {category:id,source} : null;
+    // Specific activities/goods take priority over a shop's general category.
+    const rules = [
+      ['social', /でーと|彼女|彼氏|恋人|交際|記念日|ぷれぜんと|贈り物|お祝い|飲み会|会食|友人と|友達と/],
+      ['transport', /駐車|ぱーきんぐ|こいんぱーく|たいむず|times|がそりん|給油|軽油|高速|有料道路|通行料|交通|電車|地下鉄|鉄道|新幹線|乗車|運賃|定期券|suica|すいか|pasmo|icoca|いこか|ぴたぱ|pitapa|たくしー|uber|ばす代|ばす運賃|路線ばす|高速ばす|ばす停|切符|きっぷ|航空券|飛行機|ふぇりー|れんたかー|れんたさいくる|しぇあさいくる|自転車|駐輪|clew/],
+      ['sport', /運動|じむ|ごるふ|打ちっぱなし|らうんど代|練習場|ふぃっとねす|筋とれ|すぽーつ|よが|ぴらてぃす|てにす|さっかー|ふっとさる|野球|ばすけ|ばれー|卓球|ばどみんとん|水泳|水球|ぷーる|らんにんぐ|まらそん|ぼるだりんぐ|登山|すきー|すのぼ|ちょこざっぷ|chocozap|えにたいむ|anytime/],
+      ['hobby', /麻雀|まーじゃん|まあじゃん|じゃんそう|雀荘|雀魂|趣味|娯楽|映画|しねま|げーむ|ぷれすて|にんてんどー|nintendo|switch|steam|漫画|まんが|あにめ|書籍|読書|本屋|書店|らいぶ|こんさーと|音楽|からおけ|ぼうりんぐ|遊園地|でぃずにー|usj|水族館|動物園|美術館|博物館|ねっとふりっくす|netflix/],
+      ['daily', /日用品|生活用品|生活雑貨|洗剤|柔軟剤|てぃっしゅ|といれっとぺーぱー|歯磨き|歯ぶらし|しゃんぷー|ぼでぃそーぷ|石鹸|掃除|ごみ袋|文房具|電池|充電器|傘|ますく|薬局|どらっぐ|まつきよ|うえるしあ|すぎ薬局|こすもす|つるは|だいそー|せりあ|きゃんどぅ|100均/],
+      ['dining', /店内で|店で食|お店で|いーといん|外食|れすとらん|食堂|定食屋|飲食店|居酒屋|焼肉|焼き肉|回転寿司|らーめん屋/],
+      ['daily', /(?:^|購入|買った|飲料)水(?:$|代|購入|買った)|みねらるうぉーたー|天然水|いろはす|うぉーたー|ぺっとぼとる|飲料|飲み物|じゅーす|りんごじゅーす|お茶|麦茶|緑茶|炭酸水/],
+      ['food', /すーぱー|食材|食品|食料品|せいゆう|西友|いおん|まっくすばりゅ|業務すーぱー|おーけー|まるえつ|まるなか|べるく|らいふ|いとーよーかどー|万代|ふれすこ|平和堂|らむー|ろぴあ|さんでぃ|こすとこ|とらいある|こんびに|せぶん|7eleven|ふぁみま|ふぁみりーまーと|ろーそん|みにすとっぷ|でいりーやまざき|せいこーまーと/],
+      ['dining', /松屋|まつや|吉野家|よしのや|すき家|すきや|なか卯|なかう|くら寿司|すしろー|はま寿司|かっぱ寿司|すたば|すたーばっくす|どとーる|たーりーず|こめだ|かふぇ|喫茶|まくどなるど|まっく|もすばーがー|けんたっきー|さいぜりや|がすと|じょいふる|ばーみやん|ここといちばん|ここいち|coco壱|餃子の王将|大阪王将|丸亀|はなまるうどん|やよい軒|大戸屋|びっくりどんきー|牛丼/],
+      ['food', /おにぎり|おむすび|弁当|べんとう|惣菜|そうざい|ぱん|野菜|果物|お米|牛乳|卵|冷凍食品/],
+      ['dining', /らーめん|うどん|そば|寿司|らんち|外食|夕食|昼食|こーひー/]
+    ];
+    // Water bought at any shop belongs to daily goods, not the shop's category.
+    const water = /(?:で|の|購入|買った)水(?:$|代|を|\d)|^水(?:代)?(?:$|\d)/.test(full);
+    const simple = {水:'daily',米:'food',肉:'food',魚:'food',卵:'food',本:'hobby'}[normalized];
+    if (simple) { const category=choose(simple); if(category)return category; }
+    if (water) { const category=choose('daily'); if(category)return category; }
+    for (const [id,pattern] of rules) if (has(pattern)) { const category=choose(id); if(category)return category; }
+    // Custom category keywords remain usable and do not depend on button order.
+    const custom = categories.filter(c => c.id !== 'other').flatMap(c => [c.name,...(c.words||[])].map(word=>({category:c.id,word:categoryText(word)})))
+      .filter(match=>match.word.length>=2 && full.includes(match.word)).sort((a,b)=>b.word.length-a.word.length||a.category.localeCompare(b.category));
+    if(custom.length)return {category:custom[0].category,source:'キーワードから'};
+    // Reuse distinctive merchant names even when a branch or purchase is added.
+    const nearby = learned.map((entry,index)=>{
+      const key=categoryText(entry.memo), shorter=Math.min(key.length,normalized.length), longer=Math.max(key.length,normalized.length);
+      const score=shorter>=2 && (normalized.includes(key)||key.includes(normalized)) && shorter/longer>=0.35 ? shorter/longer+Math.min(shorter,12)/8 : 0;
+      return {entry,index,score};
+    }).filter(match=>match.score>=0.65).sort((a,b)=>b.score-a.score||a.index-b.index);
+    if(nearby.length)return {category:nearby[0].entry.category,source:'似た記録から'};
+    return {category:'other',source:'未分類'};
+  }
+
+  function parseEntry(input, categories = defaults, records = [], now = /* @__PURE__ */ new Date(), presets = []) {
     let text = input.normalize("NFKC").trim(), date = localDate(now), dateToken = "", amount = 0, amountToken = "";
     const absolute = text.match(/(?:(\d{4})[年\/-])?(\d{1,2})[月\/-](\d{1,2})(?:日)?/);
     if (absolute) {
@@ -569,18 +622,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
     }
     const type = /給料|給与|収入|お小遣い|振り込まれ|入金|返金/.test(text) ? "income" : "expense";
     let memo = text.replace(dateToken, "").replace(amountToken, "").replace(/^[\s、,。]+|[\s、,。]+$/g, "").replace(/(?:で|に|を|が|は|の)?\s*(?:使った|払った|支払った|購入した|買った|でした|です|もらった|入った|振り込まれた)?$/, "").trim();
-    let category = "other", source = "未分類";
-    const previous = records.find((r) => r.type === type && memo && r.memo.normalize("NFKC").toLowerCase() === memo.toLowerCase() && categories.some((c) => c.id === r.category));
-    if (previous) {
-      category = previous.category;
-      source = "以前の記録から";
-    } else {
-      const match = categories.find((c) => c.name !== "その他" && (text.includes(c.name) || (c.words || []).some((w) => text.toLowerCase().includes(w.toLowerCase()))));
-      if (match) {
-        category = match.id;
-        source = "キーワードから";
-      }
-    }
+    let {category,source} = inferCategory(memo, text, categories, records, presets);
     if (type === "income") {
       category = "income";
       source = "収入として";
@@ -589,71 +631,86 @@ main{padding-bottom:calc(84px + var(--safe-b))}
   }
 
   // work/hitokoto/public/voice.js?v=20261106-1
-// Each attempt owns its handlers. Late events cannot clear a newer attempt.
-function createVoiceInput({getRecognition,onState=()=>{},onTranscript=()=>{},onError=()=>{},setTimer=setTimeout,clearTimer=clearTimeout,timeoutMs=20000}){
- let active=null;
- function release(session,abort=true){
-  if(active!==session)return;
-  active=null;clearTimer(session.timer);
-  session.engine.onresult=session.engine.onerror=session.engine.onend=null;
-  if(abort){try{session.engine.abort();}catch{}}
-  onState(false);
- }
- function finish(session){
-  if(active!==session)return;
-  const text=session.text,delivered=session.delivered;
-  release(session,false);
-  // Safari may finish with only an interim result; do not silently lose it.
-  if(text&&!delivered)onTranscript(text,true);
-  else if(!text)onError('no-speech');
- }
- function stop(){
-  if(!active)return;
-  const session=active;
-  try{session.engine.stop();}catch{release(session);if(session.text&&!session.delivered)onTranscript(session.text,true);return;}
-  // Leave time for the final result, but recover even if WebKit omits `end`.
-  if(active===session){clearTimer(session.timer);session.timer=setTimer(()=>{
-   if(active!==session)return;
-   const text=session.text,delivered=session.delivered;
-   release(session);
-   if(text&&!delivered)onTranscript(text,true);
-   else if(!text)onError('no-speech');
-  },1200);}
- }
- function start(){
-  if(active){stop();return;}
-  let engine;
-  try{const Recognition=getRecognition();if(!Recognition){onError('unsupported');return;}engine=new Recognition();}catch{onError('start-failed');return;}
-  const session={engine,timer:null,text:'',delivered:false};active=session;
-  engine.lang='ja-JP';engine.interimResults=true;engine.continuous=false;engine.maxAlternatives=1;
-  engine.onresult=event=>{
-   if(active!==session||session.delivered)return;
-   const results=Array.from(event.results||[]),text=results.map(result=>result[0]?.transcript||'').join(''),final=results.length>0&&results.every(result=>result.isFinal);
-   session.text=text;
-   if(final){
-    // A successful result does not need abort(). Abruptly cancelling here can
-    // disrupt the next WebKit session. Let stop/end drain, with a bounded reset.
-    session.delivered=true;
-    if(text)onTranscript(text,true);
-    stop();
-   }else if(text)onTranscript(text,false);
-  };
-  engine.onerror=event=>{
-   if(active!==session)return;
-   const error=event.error||'start-failed',text=session.text,delivered=session.delivered;
-   release(session);
-   if(delivered)return;
-   if(error==='aborted'&&text&&!delivered)onTranscript(text,true);
-   else if(error!=='aborted')onError(error);
-   else if(!text)onError('aborted');
-  };
-  engine.onend=()=>finish(session);
-  onState(true);
-  session.timer=setTimer(()=>{if(active===session){const text=session.text,delivered=session.delivered;release(session);if(text&&!delivered)onTranscript(text,true);else if(!delivered)onError('timeout');}},timeoutMs);
-  try{engine.start();}catch(error){release(session);onError(error?.name==='NotAllowedError'?'not-allowed':'start-failed');}
- }
- return {start,stop,cancel(){if(active)release(active);},get listening(){return active!==null;}};
-}
+  // One session owns each engine. Wait for its end before a queued restart.
+  function createVoiceInput({getRecognition,continuous=()=>false,onState=()=>{},onTranscript=()=>{},onError=()=>{},setTimer=setTimeout,clearTimer=clearTimeout,timeoutMs=20000}) {
+    let active=null;
+    function release(session,abort=true) {
+      if(active!==session)return;
+      active=null;clearTimer(session.timer);
+      session.engine.onresult=session.engine.onerror=session.engine.onend=null;
+      if(abort){try{session.engine.abort();}catch{}}
+      onState(false);
+    }
+    function finish(session,abort=false) {
+      if(active!==session)return;
+      const {text,delivered,restart}=session;
+      release(session,abort);
+      if(text&&!delivered)onTranscript(text,true);
+      else if(!text&&!delivered)onError('no-speech');
+      if(restart)start();
+    }
+    function armTimer(session) {
+      clearTimer(session.timer);
+      session.timer=setTimer(()=>{
+        if(active!==session)return;
+        const {text,delivered}=session;
+        release(session);
+        if(text&&!delivered)onTranscript(text,true);
+        else if(!delivered)onError('timeout');
+      },session.keepAlive?60000:timeoutMs);
+    }
+    function stop() {
+      if(!active)return;
+      const session=active;
+      if(session.stopping)return;
+      session.stopping=true;
+      try{session.engine.stop();}catch{finish(session,true);return;}
+      // Recover even if WebKit never sends end. Preserve a queued user tap.
+      if(active===session){clearTimer(session.timer);session.timer=setTimer(()=>finish(session,true),1200);}
+    }
+    function start() {
+      if(active){
+        if(active.delivered&&!active.keepAlive){active.restart=true;onState(true,'preparing');}
+        else stop();
+        return;
+      }
+      let engine;
+      try{const Recognition=getRecognition();if(!Recognition){onError('unsupported');return;}engine=new Recognition();}catch{onError('start-failed');return;}
+      const session={engine,timer:null,text:'',delivered:false,consumed:0,keepAlive:Boolean(continuous()),stopping:false,restart:false};
+      active=session;
+      engine.lang='ja-JP';engine.interimResults=true;engine.continuous=session.keepAlive;engine.maxAlternatives=1;
+      engine.onresult=event=>{
+        if(active!==session||(!session.keepAlive&&session.delivered))return;
+        const results=Array.from(event.results||[]);
+        const fresh=results.slice(session.keepAlive?session.consumed:0);
+        if(!fresh.length)return;
+        const text=fresh.map(result=>result[0]?.transcript||'').join('');
+        const final=fresh.every(result=>result.isFinal);
+        session.text=text;session.delivered=false;
+        armTimer(session);
+        if(final){
+          session.delivered=true;session.consumed=results.length;
+          if(text)onTranscript(text,true);
+          if(session.keepAlive)session.text='';
+          else stop();
+        }else if(text)onTranscript(text,false);
+      };
+      engine.onerror=event=>{
+        if(active!==session)return;
+        const error=event.error||'start-failed',{text,delivered,restart}=session;
+        release(session);
+        if(!delivered||(session.keepAlive&&!session.stopping)){
+          if(error==='aborted'&&text)onTranscript(text,true);
+          else onError(error);
+        }
+        if(restart)start();
+      };
+      engine.onend=()=>finish(session);
+      onState(true);armTimer(session);
+      try{engine.start();}catch(error){release(session);onError(error?.name==='NotAllowedError'?'not-allowed':'start-failed');}
+    }
+    return {start,stop,cancel(){if(active){active.restart=false;release(active);}},get listening(){return active!==null;},get continuous(){return Boolean(active?.keepAlive);}};
+  }
 
 function voiceErrorMessage(code){
  const messages={
@@ -663,7 +720,7 @@ function voiceErrorMessage(code){
   'service-not-allowed':'端末の音声認識サービスが利用できません。iPhoneのSiriが有効か確認してください。',
   'no-speech':'音声を聞き取れませんでした。「音声入力」を押してもう一度お話しください。',
   network:'音声認識サービスに接続できませんでした。通信を確認してもう一度お試しください。',
-  timeout:'音声認識が応答しませんでした。入力をリセットしました。もう一度試せます。',
+  timeout:'音声認識が応答しませんでした。iPhoneで2回目だけ聞き取れない場合は、連続入力モードもお試しください。',
   'audio-capture':'マイクを取得できませんでした。他のアプリの録音や通話を終了してお試しください。',
   aborted:'端末によって音声認識が中断されました。「音声入力」を押してもう一度お試しください。',
   'language-not-supported':'この端末の音声認識で日本語を利用できません。Siriの言語設定を確認してください。'
@@ -1170,7 +1227,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     return `<div class="large-title-row"><h1 class="large-title">${text}</h1>${extra}</div>`;
   }
   function render() {
-    voice.cancel();
+    if (!voice.continuous) voice.cancel();
     $("#navigation").innerHTML = navs.map(([id, ico, title]) => `<a href="#${id}" class="tab" ${id === page ? 'aria-current="page"' : ""}>${icon(ico)}<span>${title}</span></a>`).join("");
     $$(".tab").forEach((a) => a.onclick = (e) => {
       if (a.getAttribute("href") === (location.hash || "#record")) {
@@ -1191,7 +1248,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     const current = totals(data.records.filter((r) => r.date.startsWith(localDate().slice(0, 7))));
     const today = new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", weekday: "short" }).format(/* @__PURE__ */ new Date());
     return `<div class="large-title-row rec-head"><div><h1 class="large-title">記録</h1><p class="date-sub">${today}</p></div><div class="seg seg-sm" role="group" aria-label="収支の種類"><button type="button" data-type="expense" class="${draft.type === "expense" ? "on" : ""}" aria-pressed="${draft.type === "expense"}">支出</button><button type="button" data-type="income" class="${draft.type === "income" ? "on" : ""}" aria-pressed="${draft.type === "income"}">収入</button></div></div>
- <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><div id="quick" class="voice-result" contenteditable="plaintext-only" role="textbox" aria-label="ひとこと入力" enterkeyhint="done" autocapitalize="off" data-ph="話すか、ここに入力">${escape(quick)}</div><span id="parse-status" class="voice-status" aria-live="polite"></span><div id="voice-error" class="voice-error" role="alert" hidden><span id="voice-error-text"></span><button type="button" id="voice-help">原因・対処を見る</button><button type="button" id="keyboard-dictation">キーボード音声を使う</button></div></section>
+ <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><div id="quick" class="voice-result" contenteditable="plaintext-only" role="textbox" aria-label="ひとこと入力" enterkeyhint="done" autocapitalize="off" data-ph="話すか、ここに入力">${escape(quick)}</div><label class="voice-continuous"><input id="voice-continuous" type="checkbox" ${keepVoiceRunning ? "checked" : ""}>連続入力 <span>記録後も聞き取りを続ける</span></label><span id="voice-session-note" class="voice-status" aria-live="polite"></span><span id="parse-status" class="voice-status" aria-live="polite"></span><div id="voice-error" class="voice-error" role="alert" hidden><span id="voice-error-text"></span><button type="button" id="voice-help">原因・対処を見る</button><button type="button" id="keyboard-dictation">キーボード音声を使う</button></div></section>
  <h2 class="sec-head">${icon("repeat")}よく使う</h2>
  <div id="suggestions" class="suggestions" aria-label="よく使う記録">${suggestionsView()}</div>
  <form id="entry-form" novalidate>
@@ -1219,7 +1276,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     }).join("");
   }
   function applySuggestion(candidate) {
-    draft = { ...draft, amount: candidate.amount, memo: candidate.memo, category: candidate.category, type: candidate.type, date: localDate(), source: candidate.count ? "よく使う記録から" : "入力候補から" };
+    draft = { ...draft, amount: candidate.amount, memo: candidate.memo, category: candidate.category, type: candidate.type, date: localDate(), categoryLocked: true, source: candidate.count ? "よく使う記録から" : "入力候補から" };
     quick = `${candidate.memo || categoryOf(candidate).name} ${yen(candidate.amount)}円`;
     lastParsedQuick = quick;
     $("#quick").textContent = quick;
@@ -1284,6 +1341,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
   function bindCategories() {
     $$("[data-cat]").forEach((b) => b.onclick = () => {
       draft.category = b.dataset.cat;
+      draft.categoryLocked = true;
       draft.source = "";
       $("#category-grid").innerHTML = categoryButtons();
       $("#recognition").textContent = "";
@@ -1318,8 +1376,8 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
   function applyQuick() {
     syncDraft();
     if (!quick.trim()) return;
-    const parsed = parseEntry(quick, data.categories, data.records);
-    draft = { ...draft, ...parsed, amount: parsed.amount || "" };
+    const parsed = parseEntry(quick, data.categories, data.records, new Date(), data.quickPresets);
+    draft = { ...draft, ...parsed, categoryLocked: false, amount: parsed.amount || "" };
     lastParsedQuick = quick;
     showDraft();
     $("#parse-status").textContent = parsed.amount ? `${parsed.source}振り分けました。内容を確認してください。` : "金額が見つかりませんでした。「円」を付けて話すか、金額を入力してください。";
@@ -1345,12 +1403,25 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
       draft.date = localDate(d);
       showDraft();
     });
+    $("#memo").onblur = () => {
+      syncDraft();
+      if (!draft.memo.trim() || draft.type !== 'expense' || draft.categoryLocked) return;
+      const inferred = inferCategory(draft.memo, draft.memo, data.categories, data.records, data.quickPresets);
+      draft.category = inferred.category; draft.source = inferred.source;
+      showDraft();
+    };
     $("#amount").oninput = () => $("#amount").removeAttribute("aria-invalid");
     $("#amount").onblur = () => {
       const value = $("#amount").value.normalize("NFKC").replaceAll(",", "");
       if (/^\d+$/.test(value)) $("#amount").value = yen(Number(value));
     };
     $("#mic").onclick = startVoice;
+    $("#voice-continuous").onchange = event => {
+      voice.cancel(); keepVoiceRunning=event.target.checked;
+      try { localStorage.setItem('hitokoto-continuous-voice',keepVoiceRunning?'1':'0'); } catch {}
+      $("#parse-status").textContent='次に「話して入力」を押すと、この設定で開始します。';
+    };
+    paintVoiceState(voice.listening);
     const q = $("#quick");
     q.onkeydown = (e) => {
       if (e.key === "Enter" && !e.isComposing) {
@@ -1395,16 +1466,21 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
       });
     };
   }
+  var keepVoiceRunning=false;
+  try { keepVoiceRunning=localStorage.getItem('hitokoto-continuous-voice')==='1'; } catch {}
+  function paintVoiceState(listening,phase='listening') {
+    if (page !== 'record' || !$("#mic")) return;
+    $("#mic").classList.toggle('listening',listening);
+    $("#mic").setAttribute('aria-pressed',String(listening));
+    $("#mic").setAttribute('aria-label',listening?'音声入力を停止':'音声で入力');
+    $("#mic-label").textContent=listening?'停止':'話して入力';
+    $("#voice-session-note").textContent=listening&&keepVoiceRunning?'聞き取り中です。終わったら「停止」を押してください。':'';
+    $("#parse-status").textContent=listening?(phase==='preparing'?'前の入力の終了を待って開始します…':'聞き取り中…'):quick?'内容を確認して記録できます':'';
+  }
   var voice = createVoiceInput({
     getRecognition: () => window.SpeechRecognition || window.webkitSpeechRecognition,
-    onState: (listening) => {
-      if (page !== "record" || !$("#mic")) return;
-      $("#mic").classList.toggle("listening", listening);
-      $("#mic").setAttribute("aria-pressed", String(listening));
-      $("#mic").setAttribute("aria-label", listening ? "音声入力を停止" : "音声で入力");
-      $("#mic-label").textContent = listening ? "停止" : "話して入力";
-      $("#parse-status").textContent = listening ? "聞き取り中…" : quick ? "内容を確認して記録できます" : "";
-    },
+    continuous: () => keepVoiceRunning,
+    onState: paintVoiceState,
     onTranscript: (text, final) => {
       if (page !== "record" || !$("#quick")) return;
       quick = text;
@@ -1429,7 +1505,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
   function showVoiceHelp() {
     const supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
     const standalone = Boolean(navigator.standalone || window.matchMedia?.("(display-mode: standalone)").matches);
-    const sheet = openSheet("音声入力の確認", `<form id="voice-retry-form"><p class="sheet-note">${escape(voiceErrorMessage(lastVoiceError))}</p><ul class="voice-help-list"><li>iPhoneの「設定」でSiriが有効か確認してください。Safariの音声認識にはSiriが必要です。</li><li>このサイトのマイク利用を許可してください。拒否した場合はSafariのサイト設定から変更できます。</li><li>録音中や通話中のアプリを止めてから、家計簿を閉じて開き直してください。</li></ul><p class="sheet-note">${standalone ? "ホーム画面版でだけ失敗する場合は、同じURLをSafariで開いてお試しください。" : "許可しても繰り返し失敗する場合は、iOSの音声認識側の問題の可能性があります。"}</p><p class="voice-diagnostic">音声認識：${supported ? "対応APIあり" : "この画面ではAPIなし"}<br>${standalone ? "ホーム画面版" : "ブラウザ版"} ／ エラー：${escape(lastVoiceError || "不明")}</p></form>`, "再試行", "voice-retry-form");
+    const sheet = openSheet("音声入力の確認", `<form id="voice-retry-form"><p class="sheet-note">${escape(voiceErrorMessage(lastVoiceError))}</p><ul class="voice-help-list"><li>2回目だけ文字が出ない場合は「連続入力」をオンにして開始してください。一度の聞き取りを続けたまま複数件を記録できます。終わったら停止してください。</li><li>iPhoneの「設定」でSiriが有効か確認してください。Safariの音声認識にはSiriが必要です。</li><li>このサイトのマイク利用を許可してください。拒否した場合はSafariのサイト設定から変更できます。</li><li>録音中や通話中のアプリを止めてから、家計簿を閉じて開き直してください。</li></ul><p class="sheet-note">${standalone ? "ホーム画面版でだけ失敗する場合は、同じURLをSafariで開いてお試しください。" : "許可しても繰り返し失敗する場合は、iOSの音声認識側の問題の可能性があります。"}</p><p class="voice-diagnostic">音声認識：${supported ? "対応APIあり" : "この画面ではAPIなし"}<br>${standalone ? "ホーム画面版" : "ブラウザ版"} ／ エラー：${escape(lastVoiceError || "不明")}</p></form>`, "再試行", "voice-retry-form");
     $("#voice-retry-form").onsubmit = e => { e.preventDefault(); sheet.close(); startVoice(); };
   }
   function useKeyboardDictation(message) {
@@ -1468,7 +1544,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     $$("[data-edit]").forEach((b) => b.onclick = () => editEntry(b.dataset.edit));
     $$("[data-reuse]").forEach((b) => b.onclick = () => {
       const r = data.records.find((r2) => r2.id === b.dataset.reuse);
-      draft = { ...r, date: localDate(), source: "過去の記録を再利用" };
+      draft = { ...r, date: localDate(), categoryLocked: true, source: "過去の記録を再利用" };
       quick = "";
       if (location.hash === "#record") {
         render();
@@ -1617,7 +1693,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     return `${largeTitle("設定")}<div class="list-header"><span>カテゴリ</span></div><div class="group">${data.categories.map((c, i) => `<div class="cell settings-category"><span class="cat-icon" style="--cat:${c.color};width:30px;height:30px;border-radius:8px">${icon(c.icon)}</span><input data-cat-name="${escape(c.id)}" value="${escape(c.name)}" aria-label="${escape(c.name)}の名前">${i === 0 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="-1" aria-label="${escape(c.name)}を上に移動">${icon("up")}</button>`}${i === data.categories.length - 1 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="1" aria-label="${escape(c.name)}を下に移動">${icon("down")}</button>`}${c.id === "other" ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button danger" data-remove-cat="${escape(c.id)}" aria-label="${escape(c.name)}を削除">${icon("trash")}</button>`}</div>`).join("")}<form id="add-category" class="cell settings-add"><span class="cat-icon" style="--cat:var(--tint);width:30px;height:30px;border-radius:8px">${icon("plus")}</span><input id="new-category" placeholder="新しいカテゴリ" aria-label="新しいカテゴリ名" required enterkeyhint="done"><button type="submit">追加</button></form></div><p class="list-footer">名前はタップして変更できます（30文字まで）。「その他」は削除できません。</p>
 ${syncSettingsView()}
  <div class="list-header"><span>データ</span></div><div class="group"><button type="button" class="cell settings-row" id="backup"><span class="cat-icon" style="--cat:#0088ff">${icon("download")}</span><span>バックアップを保存</span></button><button type="button" class="cell settings-row" id="restore"><span class="cat-icon" style="--cat:#34c759">${icon("upload")}</span><span>バックアップを読み込む</span></button><button type="button" class="cell settings-row" id="export-all"><span class="cat-icon" style="--cat:#8e8e93">${icon("download")}</span><span>CSVを書き出す</span></button><div class="cell"><span>保存中の記録</span><span class="cell-value">${data.records.length}件</span></div></div><input type="file" id="restore-file" accept="application/json,.json" hidden><p class="list-footer">${LOCAL_ONLY ? (cloudConfig() ? "記録はこの端末とスプレッドシートの両方に保存されます。" : "記録はこの端末の中だけに保存されます。") + "念のため、ときどきバックアップも保存してください。以前のサイトの記録は、そのバックアップ（JSON）を読み込むと引き継げます。" : "同じアカウントで開くと、記録・カテゴリ・入力候補を端末間で同期します。"}</p>
- <div class="list-header"><span>ひとこと入力・音声入力</span></div><div class="group"><div class="cell" style="display:block;padding:12px 16px"><p style="font-size:15px;line-height:20px">店名やキーワード、過去の分類から自動で振り分けます。同じメモで保存したカテゴリを次回から優先します。判定が難しいものは「その他」に入るので、保存前に確認してください。</p></div></div><p class="list-footer">音声入力はブラウザの音声認識を使います。音声がブラウザの提供元へ送信される場合があります。使えないときは、金額・カテゴリ・メモ欄から入力できます。</p>`;
+ <div class="list-header"><span>ひとこと入力・音声入力</span></div><div class="group"><div class="cell" style="display:block;padding:12px 16px"><p style="font-size:15px;line-height:20px">店名や買ったものと、過去に保存した分類から振り分けます。スーパー・コンビニの食事は食費、水・生活用品は日用品、デートは交際費など、ご希望のルールを優先します。「その他」の履歴は正解として覚えず、分かる分類を探します。カテゴリを手直しして保存すると、次からその分類を参照します。</p></div></div><p class="list-footer">音声入力はブラウザの音声認識を使います。音声がブラウザの提供元へ送信される場合があります。使えないときは、金額・カテゴリ・メモ欄から入力できます。</p>`;
   }
   function bindSettings() {
     bindSyncSettings();
