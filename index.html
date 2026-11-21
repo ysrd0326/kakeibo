@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="家計簿"><meta name="format-detection" content="telephone=no"><meta name="description" content="話すように書くだけ。毎日の記録が軽くなる、ひとこと家計簿。">
   <title>家計簿</title>
+  <meta name="app-version" content="2026.11.21.3">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
@@ -448,6 +449,8 @@ main{padding-bottom:calc(84px + var(--safe-b))}
 .voice-diagnostic{font-size:14px;line-height:1.6;color:var(--label-2);overflow-wrap:anywhere}
 .voice-continuous{display:flex;align-items:center;gap:6px;margin:5px 4px 0;font-size:14px;line-height:24px;min-height:28px;color:var(--label)}
 .voice-continuous input{width:18px;height:18px;margin:0;accent-color:var(--tint);flex:none}.voice-continuous span{font-size:12px;color:var(--label-2)}
+.voice-controls{display:flex;align-items:center;gap:10px;margin-top:4px}.voice-controls .voice-continuous{margin:0;flex:1}
+.app-update-link{color:var(--tint);font-size:13px;padding:4px 6px;min-height:32px;text-decoration:underline}.app-version{font-size:12px;color:var(--label-2);white-space:nowrap}
   </style>
 </head>
 <body>
@@ -632,12 +635,13 @@ main{padding-bottom:calc(84px + var(--safe-b))}
 
   // work/hitokoto/public/voice.js?v=20261106-1
   // One session owns each engine. Wait for its end before a queued restart.
-  function createVoiceInput({getRecognition,continuous=()=>false,onState=()=>{},onTranscript=()=>{},onError=()=>{},setTimer=setTimeout,clearTimer=clearTimeout,timeoutMs=20000}) {
+  function createVoiceInput({getRecognition,continuous=()=>false,onState=()=>{},onTranscript=()=>{},onError=()=>{},onDiagnostic=()=>{},setTimer=setTimeout,clearTimer=clearTimeout,timeoutMs=20000}) {
     let active=null;
     function release(session,abort=true) {
       if(active!==session)return;
       active=null;clearTimer(session.timer);
-      session.engine.onresult=session.engine.onerror=session.engine.onend=null;
+      clearTimer(session.noResultTimer);
+      session.engine.onresult=session.engine.onerror=session.engine.onend=session.engine.onstart=session.engine.onaudiostart=session.engine.onspeechstart=null;
       if(abort){try{session.engine.abort();}catch{}}
       onState(false);
     }
@@ -657,7 +661,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
         release(session);
         if(text&&!delivered)onTranscript(text,true);
         else if(!delivered)onError('timeout');
-      },session.keepAlive?60000:timeoutMs);
+      },session.keepAlive&&session.diagnostic.results?60000:timeoutMs);
     }
     function stop() {
       if(!active)return;
@@ -676,9 +680,20 @@ main{padding-bottom:calc(84px + var(--safe-b))}
       }
       let engine;
       try{const Recognition=getRecognition();if(!Recognition){onError('unsupported');return;}engine=new Recognition();}catch{onError('start-failed');return;}
-      const session={engine,timer:null,text:'',delivered:false,consumed:0,keepAlive:Boolean(continuous()),stopping:false,restart:false};
+      const session={engine,timer:null,noResultTimer:null,diagnostic:{started:false,audio:false,speech:false,results:0},text:'',delivered:false,consumed:0,keepAlive:Boolean(continuous()),stopping:false,restart:false};
       active=session;
       engine.lang='ja-JP';engine.interimResults=true;engine.continuous=session.keepAlive;engine.maxAlternatives=1;
+      function report(stage){onDiagnostic({...session.diagnostic,stage});}
+      engine.onstart=()=>{
+        if(active!==session)return;
+        session.diagnostic.started=true;report('started');onState(true,'listening');
+        clearTimer(session.noResultTimer);session.noResultTimer=setTimer(()=>{
+          if(active!==session||session.diagnostic.results)return;
+          report('no-result');release(session);onError('no-result');
+        },12000);
+      };
+      engine.onaudiostart=()=>{if(active===session){session.diagnostic.audio=true;report('audio');onState(true,'capturing');}};
+      engine.onspeechstart=()=>{if(active===session){session.diagnostic.speech=true;report('speech');onState(true,'speech');}};
       engine.onresult=event=>{
         if(active!==session||(!session.keepAlive&&session.delivered))return;
         const results=Array.from(event.results||[]);
@@ -686,7 +701,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
         if(!fresh.length)return;
         const text=fresh.map(result=>result[0]?.transcript||'').join('');
         const final=fresh.every(result=>result.isFinal);
-        session.text=text;session.delivered=false;
+        session.text=text;session.delivered=false;session.diagnostic.results++;clearTimer(session.noResultTimer);report('result');
         armTimer(session);
         if(final){
           session.delivered=true;session.consumed=results.length;
@@ -706,7 +721,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
         if(restart)start();
       };
       engine.onend=()=>finish(session);
-      onState(true);armTimer(session);
+      report('requested');onState(true,'requesting');armTimer(session);
       try{engine.start();}catch(error){release(session);onError(error?.name==='NotAllowedError'?'not-allowed':'start-failed');}
     }
     return {start,stop,cancel(){if(active){active.restart=false;release(active);}},get listening(){return active!==null;},get continuous(){return Boolean(active?.keepAlive);}};
@@ -714,6 +729,7 @@ main{padding-bottom:calc(84px + var(--safe-b))}
 
 function voiceErrorMessage(code){
  const messages={
+  'no-result':'マイクを開始しましたが、認識結果が返りませんでした。連続入力を試すか、家計簿をアプリ切替画面から終了して開き直してください。',
   unsupported:'この画面ではブラウザの音声認識機能が提供されていません。Safariで同じサイトを開いてお試しください。',
   'insecure-context':'音声入力には安全な接続が必要です。httpsで始まる家計簿のURLを開いてください。',
   'not-allowed':'マイクまたは音声認識の利用が許可されていません。サイトのマイク許可とSiriの設定を確認してください。',
@@ -770,6 +786,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
   var escape = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   var yen = (n) => new Intl.NumberFormat("ja-JP").format(n);
   var money = (n) => `¥${yen(n)}`;
+  var APP_VERSION="2026.11.21.3";
   var LOCAL_ONLY = true;
   var STORE = LOCAL_ONLY ? "hitokoto-single-file-v1" : "hitokoto-notebook-v1";
   var MIGRATED = STORE + "-synced";
@@ -1243,12 +1260,13 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     bindRows();
     watchTitle();
     ({ record: bindRecord, history: bindHistory, calendar: bindCalendar, report: bindReport, settings: bindSettings })[page]();
+    $$('[data-app-update]').forEach(button=>button.onclick=checkAppUpdate);
   }
   function recordView() {
     const current = totals(data.records.filter((r) => r.date.startsWith(localDate().slice(0, 7))));
     const today = new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", weekday: "short" }).format(/* @__PURE__ */ new Date());
     return `<div class="large-title-row rec-head"><div><h1 class="large-title">記録</h1><p class="date-sub">${today}</p></div><div class="seg seg-sm" role="group" aria-label="収支の種類"><button type="button" data-type="expense" class="${draft.type === "expense" ? "on" : ""}" aria-pressed="${draft.type === "expense"}">支出</button><button type="button" data-type="income" class="${draft.type === "income" ? "on" : ""}" aria-pressed="${draft.type === "income"}">収入</button></div></div>
- <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><div id="quick" class="voice-result" contenteditable="plaintext-only" role="textbox" aria-label="ひとこと入力" enterkeyhint="done" autocapitalize="off" data-ph="話すか、ここに入力">${escape(quick)}</div><label class="voice-continuous"><input id="voice-continuous" type="checkbox" ${keepVoiceRunning ? "checked" : ""}>連続入力 <span>記録後も聞き取りを続ける</span></label><span id="voice-session-note" class="voice-status" aria-live="polite"></span><span id="parse-status" class="voice-status" aria-live="polite"></span><div id="voice-error" class="voice-error" role="alert" hidden><span id="voice-error-text"></span><button type="button" id="voice-help">原因・対処を見る</button><button type="button" id="keyboard-dictation">キーボード音声を使う</button></div></section>
+ <section class="voice-card" aria-label="ひとこと入力"><div class="voice-actions"><button id="mic" class="voice-button" type="button" aria-label="音声で入力" aria-pressed="false">${icon("mic")}<span id="mic-label">話して入力</span></button><button id="parse" class="voice-save" type="button">このまま記録</button></div><div id="quick" class="voice-result" contenteditable="plaintext-only" role="textbox" aria-label="ひとこと入力" enterkeyhint="done" autocapitalize="off" data-ph="話すか、ここに入力">${escape(quick)}</div><div class="voice-controls"><label class="voice-continuous"><input id="voice-continuous" type="checkbox" ${keepVoiceRunning ? "checked" : ""} aria-label="連続入力（記録後も聞き取りを続ける）">連続入力</label><button type="button" class="app-update-link" data-app-update>更新</button><span class="app-version">v${APP_VERSION.slice(5)}</span></div><span id="voice-session-note" class="voice-status" aria-live="polite"></span><span id="parse-status" class="voice-status" aria-live="polite"></span><div id="voice-error" class="voice-error" role="alert" hidden><span id="voice-error-text"></span><button type="button" id="voice-help">原因・対処を見る</button><button type="button" id="keyboard-dictation">キーボード音声を使う</button></div></section>
  <h2 class="sec-head">${icon("repeat")}よく使う</h2>
  <div id="suggestions" class="suggestions" aria-label="よく使う記録">${suggestionsView()}</div>
  <form id="entry-form" novalidate>
@@ -1466,6 +1484,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
       });
     };
   }
+  var lastVoiceDiagnostic=null;
   var keepVoiceRunning=false;
   try { keepVoiceRunning=localStorage.getItem('hitokoto-continuous-voice')==='1'; } catch {}
   function paintVoiceState(listening,phase='listening') {
@@ -1475,12 +1494,14 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     $("#mic").setAttribute('aria-label',listening?'音声入力を停止':'音声で入力');
     $("#mic-label").textContent=listening?'停止':'話して入力';
     $("#voice-session-note").textContent=listening&&keepVoiceRunning?'聞き取り中です。終わったら「停止」を押してください。':'';
-    $("#parse-status").textContent=listening?(phase==='preparing'?'前の入力の終了を待って開始します…':'聞き取り中…'):quick?'内容を確認して記録できます':'';
+    const states={preparing:'前の入力の終了を待って開始します…',requesting:'音声認識を開始しています…',listening:'音声認識に接続しました。話してください。',capturing:'マイクに接続しました。認識結果を待っています…',speech:'声を検出しました。文字起こしを待っています…'};
+    $("#parse-status").textContent=listening?(states[phase]||states.listening):quick?'内容を確認して記録できます':'';
   }
   var voice = createVoiceInput({
     getRecognition: () => window.SpeechRecognition || window.webkitSpeechRecognition,
     continuous: () => keepVoiceRunning,
     onState: paintVoiceState,
+    onDiagnostic: diagnostic=>{lastVoiceDiagnostic=diagnostic;},
     onTranscript: (text, final) => {
       if (page !== "record" || !$("#quick")) return;
       quick = text;
@@ -1505,7 +1526,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
   function showVoiceHelp() {
     const supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
     const standalone = Boolean(navigator.standalone || window.matchMedia?.("(display-mode: standalone)").matches);
-    const sheet = openSheet("音声入力の確認", `<form id="voice-retry-form"><p class="sheet-note">${escape(voiceErrorMessage(lastVoiceError))}</p><ul class="voice-help-list"><li>2回目だけ文字が出ない場合は「連続入力」をオンにして開始してください。一度の聞き取りを続けたまま複数件を記録できます。終わったら停止してください。</li><li>iPhoneの「設定」でSiriが有効か確認してください。Safariの音声認識にはSiriが必要です。</li><li>このサイトのマイク利用を許可してください。拒否した場合はSafariのサイト設定から変更できます。</li><li>録音中や通話中のアプリを止めてから、家計簿を閉じて開き直してください。</li></ul><p class="sheet-note">${standalone ? "ホーム画面版でだけ失敗する場合は、同じURLをSafariで開いてお試しください。" : "許可しても繰り返し失敗する場合は、iOSの音声認識側の問題の可能性があります。"}</p><p class="voice-diagnostic">音声認識：${supported ? "対応APIあり" : "この画面ではAPIなし"}<br>${standalone ? "ホーム画面版" : "ブラウザ版"} ／ エラー：${escape(lastVoiceError || "不明")}</p></form>`, "再試行", "voice-retry-form");
+    const sheet = openSheet("音声入力の確認", `<form id="voice-retry-form"><p class="sheet-note">${escape(voiceErrorMessage(lastVoiceError))}</p><ul class="voice-help-list"><li>2回目だけ文字が出ない場合は「連続入力」をオンにして開始してください。一度の聞き取りを続けたまま複数件を記録できます。終わったら停止してください。</li><li>iPhoneの「設定」でSiriが有効か確認してください。Safariの音声認識にはSiriが必要です。</li><li>このサイトのマイク利用を許可してください。拒否した場合はSafariのサイト設定から変更できます。</li><li>録音中や通話中のアプリを止めてから、家計簿を閉じて開き直してください。</li></ul><p class="sheet-note">${standalone ? "ホーム画面版でだけ失敗する場合は、同じURLをSafariで開いてお試しください。" : "許可しても繰り返し失敗する場合は、iOSの音声認識側の問題の可能性があります。"}</p><p class="voice-diagnostic">音声認識：${supported ? "対応APIあり" : "この画面ではAPIなし"}<br>${standalone ? "ホーム画面版" : "ブラウザ版"} ／ エラー：${escape(lastVoiceError || "不明")}<br>版：${APP_VERSION}<br>${lastVoiceDiagnostic?`認識開始：${lastVoiceDiagnostic.started?"あり":"なし"} ／ マイク接続：${lastVoiceDiagnostic.audio?"あり":"なし"}<br>発話検出：${lastVoiceDiagnostic.speech?"あり":"なし"} ／ 結果：${lastVoiceDiagnostic.results}回`:"診断情報なし"}</p></form>`, "再試行", "voice-retry-form");
     $("#voice-retry-form").onsubmit = e => { e.preventDefault(); sheet.close(); startVoice(); };
   }
   function useKeyboardDictation(message) {
@@ -1690,7 +1711,7 @@ function frequentEntries(records,overrides=[],type='expense',limit=3){
     });
   }
   function settingsView() {
-    return `${largeTitle("設定")}<div class="list-header"><span>カテゴリ</span></div><div class="group">${data.categories.map((c, i) => `<div class="cell settings-category"><span class="cat-icon" style="--cat:${c.color};width:30px;height:30px;border-radius:8px">${icon(c.icon)}</span><input data-cat-name="${escape(c.id)}" value="${escape(c.name)}" aria-label="${escape(c.name)}の名前">${i === 0 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="-1" aria-label="${escape(c.name)}を上に移動">${icon("up")}</button>`}${i === data.categories.length - 1 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="1" aria-label="${escape(c.name)}を下に移動">${icon("down")}</button>`}${c.id === "other" ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button danger" data-remove-cat="${escape(c.id)}" aria-label="${escape(c.name)}を削除">${icon("trash")}</button>`}</div>`).join("")}<form id="add-category" class="cell settings-add"><span class="cat-icon" style="--cat:var(--tint);width:30px;height:30px;border-radius:8px">${icon("plus")}</span><input id="new-category" placeholder="新しいカテゴリ" aria-label="新しいカテゴリ名" required enterkeyhint="done"><button type="submit">追加</button></form></div><p class="list-footer">名前はタップして変更できます（30文字まで）。「その他」は削除できません。</p>
+    return `${largeTitle("設定")}<p class="list-footer">バージョン ${APP_VERSION}</p><div class="group" style="margin-top:12px"><button type="button" class="cell cell-link" data-app-update><span>アプリの更新を確認</span>${icon("repeat")}</button></div><div class="list-header"><span>カテゴリ</span></div><div class="group">${data.categories.map((c, i) => `<div class="cell settings-category"><span class="cat-icon" style="--cat:${c.color};width:30px;height:30px;border-radius:8px">${icon(c.icon)}</span><input data-cat-name="${escape(c.id)}" value="${escape(c.name)}" aria-label="${escape(c.name)}の名前">${i === 0 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="-1" aria-label="${escape(c.name)}を上に移動">${icon("up")}</button>`}${i === data.categories.length - 1 ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button" data-move="${escape(c.id)}" data-dir="1" aria-label="${escape(c.name)}を下に移動">${icon("down")}</button>`}${c.id === "other" ? '<span class="icon-spacer"></span>' : `<button type="button" class="icon-button danger" data-remove-cat="${escape(c.id)}" aria-label="${escape(c.name)}を削除">${icon("trash")}</button>`}</div>`).join("")}<form id="add-category" class="cell settings-add"><span class="cat-icon" style="--cat:var(--tint);width:30px;height:30px;border-radius:8px">${icon("plus")}</span><input id="new-category" placeholder="新しいカテゴリ" aria-label="新しいカテゴリ名" required enterkeyhint="done"><button type="submit">追加</button></form></div><p class="list-footer">名前はタップして変更できます（30文字まで）。「その他」は削除できません。</p>
 ${syncSettingsView()}
  <div class="list-header"><span>データ</span></div><div class="group"><button type="button" class="cell settings-row" id="backup"><span class="cat-icon" style="--cat:#0088ff">${icon("download")}</span><span>バックアップを保存</span></button><button type="button" class="cell settings-row" id="restore"><span class="cat-icon" style="--cat:#34c759">${icon("upload")}</span><span>バックアップを読み込む</span></button><button type="button" class="cell settings-row" id="export-all"><span class="cat-icon" style="--cat:#8e8e93">${icon("download")}</span><span>CSVを書き出す</span></button><div class="cell"><span>保存中の記録</span><span class="cell-value">${data.records.length}件</span></div></div><input type="file" id="restore-file" accept="application/json,.json" hidden><p class="list-footer">${LOCAL_ONLY ? (cloudConfig() ? "記録はこの端末とスプレッドシートの両方に保存されます。" : "記録はこの端末の中だけに保存されます。") + "念のため、ときどきバックアップも保存してください。以前のサイトの記録は、そのバックアップ（JSON）を読み込むと引き継げます。" : "同じアカウントで開くと、記録・カテゴリ・入力候補を端末間で同期します。"}</p>
  <div class="list-header"><span>ひとこと入力・音声入力</span></div><div class="group"><div class="cell" style="display:block;padding:12px 16px"><p style="font-size:15px;line-height:20px">店名や買ったものと、過去に保存した分類から振り分けます。スーパー・コンビニの食事は食費、水・生活用品は日用品、デートは交際費など、ご希望のルールを優先します。「その他」の履歴は正解として覚えず、分かる分類を探します。カテゴリを手直しして保存すると、次からその分類を参照します。</p></div></div><p class="list-footer">音声入力はブラウザの音声認識を使います。音声がブラウザの提供元へ送信される場合があります。使えないときは、金額・カテゴリ・メモ欄から入力できます。</p>`;
@@ -1895,6 +1916,42 @@ ${syncSettingsView()}
       }
     };
   }
+  async function checkAppUpdate() {
+    const buttons=$$('[data-app-update]');buttons.forEach(button=>button.disabled=true);
+    try {
+      const url=new URL('index.html',location.href);url.searchParams.set('app-version-check',String(Date.now()));
+      const response=await fetch(url.href,{cache:'no-store',credentials:'same-origin'});
+      if(!response.ok)throw Error('update unavailable');
+      const html=await response.text();
+      const latest=html.match(/<meta\s+name="app-version"\s+content="([\w.-]+)"/i)?.[1];
+      if(!latest)throw Error('missing version');
+      if(latest===APP_VERSION){toast('最新版です（'+APP_VERSION+'）。');return;}
+      reloadUpdatedApp(latest);
+    }catch{toast('更新を確認できませんでした。通信を確認してもう一度お試しください。');}
+    finally{buttons.forEach(button=>button.disabled=false);}
+  }
+  function reloadUpdatedApp(version) {
+    if(page==='record'&&$('#quick'))syncDraft();
+    // Updating the page must never discard a partly entered transaction.
+    try {sessionStorage.setItem('hitokoto-update-draft',JSON.stringify({draft,quick,lastParsedQuick}));}
+    catch {toast('入力中の内容を保持できません。記録を保存してから更新してください。');return;}
+    voice.cancel();
+    const url=new URL(location.href);url.searchParams.set('app-update',version+'.'+Date.now());
+    location.replace(url.href);
+  }
+  function restoreUpdateDraft() {
+    try {
+      const saved=JSON.parse(sessionStorage.getItem('hitokoto-update-draft')||'null');
+      sessionStorage.removeItem('hitokoto-update-draft');
+      const d=saved?.draft;
+      if(!d||!isType(d.type)||!isDate(d.date)||typeof d.memo!=='string'||d.memo.length>500||!/^\d{0,9}$/.test(String(d.amount??'')))return;
+      const category=d.type==='income'?'income':data.categories.some(c=>c.id===d.category)?d.category:'other';
+      draft={amount:d.amount,memo:d.memo,date:d.date,type:d.type,category,categoryLocked:Boolean(d.categoryLocked),source:typeof d.source==='string'?d.source.slice(0,40):''};
+      quick=typeof saved.quick==='string'?saved.quick.slice(0,1000):'';
+      lastParsedQuick=typeof saved.lastParsedQuick==='string'?saved.lastParsedQuick.slice(0,1000):'';
+    }catch{}
+  }
+
   function navigate() {
     if (page === "record" && $("#quick")) syncDraft();
     voice.cancel();
@@ -1922,6 +1979,7 @@ ${syncSettingsView()}
     }
   };
   document.addEventListener("pointerdown", hideToast, true);
+  restoreUpdateDraft();
   navigate();
   
   refreshLedger(true);
@@ -1939,7 +1997,7 @@ ${syncSettingsView()}
   </script>
 <script>
   if ("serviceWorker" in navigator && location.protocol === "https:") {
-    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).then(registration=>registration.update()).catch(() => {}));
   }
   try {
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
